@@ -29,6 +29,11 @@ import (
 type JobSetSpec struct {
 	// Jobs is the group of jobs that will form the set.
 	Jobs []JobTemplate `json:"jobs"`
+
+	// If sequentialStartup if set, then spec.jobs will be created one at a time
+	// according to their order in the list. A job is created only after
+	// the pods of the previous one are Ready.
+	SequentialStartup *bool `json:"sequentialStartup,omitempty"`
 }
 
 // JobSetStatus defines the observed state of JobSet

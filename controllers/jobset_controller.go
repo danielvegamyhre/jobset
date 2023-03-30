@@ -18,21 +18,21 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	ref "k8s.io/client-go/tools/reference"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	jobsetv1alpha "batch.x-k8s.io/jobset/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeclientset "k8s.io/client-go/kubernetes"
+	"k8s.io/klog"
 )
 
 // JobSetReconciler reconciles a JobSet object
@@ -80,29 +80,30 @@ type Clock interface {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.14.1/pkg/reconcile
 func (r *JobSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	var jobSet jobsetv1alpha.JobSet
 	if err := r.Get(ctx, req.NamespacedName, &jobSet); err != nil {
-		log.Error(err, "unable to fetch JobSet")
+		klog.Error(err, "unable to fetch JobSet")
 		// we'll ignore not-found errors, since they can't be fixed by an immediate
 		// requeue (we'll need to wait for a new notification), and we can get them
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	jobs, err := r.getChildJobs(ctx, &jobSet, req, log)
+	jobs, err := r.getChildJobs(ctx, &jobSet, req)
 	if err != nil {
+		klog.Errorf("error getting child jobs: %v", err)
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.updateStatus(ctx, &jobSet, jobs, log); err != nil {
+	if err := r.updateStatus(ctx, &jobSet, jobs); err != nil {
+		klog.Errorf("error updating status: %v", err)
 		return ctrl.Result{}, nil
 	}
 
-	r.cleanUpOldJobs(ctx, jobs, log)
+	r.cleanUpOldJobs(ctx, jobs)
 
-	if err := r.createNewJobs(ctx, req, &jobSet, jobs, log); err != nil {
+	if err := r.createReadyJobs(ctx, req, &jobSet); err != nil {
+		klog.Errorf("error creating ready jobs: %v", err)
 		return ctrl.Result{}, nil
 	}
 
@@ -145,7 +146,7 @@ func (r *JobSetReconciler) constructJobFromTemplate(jobSet *jobsetv1alpha.JobSet
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      make(map[string]string),
 			Annotations: make(map[string]string),
-			Name:        jobTemplate.Name,
+			Name:        jobTemplate.Template.Name, // temporary hack because Job ObjectMeta seems to disappear during CRD conversion
 			Namespace:   jobSet.Namespace,
 		},
 		Spec: *jobTemplate.Template.Spec.DeepCopy(),
@@ -159,33 +160,24 @@ func (r *JobSetReconciler) constructJobFromTemplate(jobSet *jobsetv1alpha.JobSet
 
 // cleanUpOldJobs does "best effort" deletion of old jobs - if we fail on
 // a particular one, we won't requeue just to finish the deleting.
-func (r *JobSetReconciler) cleanUpOldJobs(ctx context.Context, jobs *childJobs, log logr.Logger) {
+func (r *JobSetReconciler) cleanUpOldJobs(ctx context.Context, jobs *childJobs) {
 	// Clean up failed jobs
 	for _, job := range jobs.failed {
 		if err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
-			log.Error(err, "unable to delete old failed job", "job", job)
+			klog.Error(err, "unable to delete old failed job", "job", job)
 		} else {
-			log.V(0).Info("deleted old failed job", "job", job)
-		}
-	}
-
-	// Clean up succeeded jobs
-	for _, job := range jobs.successful {
-		if err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); (err) != nil {
-			log.Error(err, "unable to delete old successful job", "job", job)
-		} else {
-			log.V(0).Info("deleted old successful job", "job", job)
+			klog.V(0).Info("deleted old failed job", "job", job)
 		}
 	}
 }
 
 // getChildJobs fetches all Jobs owned by the JobSet and returns them
 // categorized by status (active, successful, failed).
-func (r *JobSetReconciler) getChildJobs(ctx context.Context, jobSet *jobsetv1alpha.JobSet, req ctrl.Request, log logr.Logger) (*childJobs, error) {
+func (r *JobSetReconciler) getChildJobs(ctx context.Context, jobSet *jobsetv1alpha.JobSet, req ctrl.Request) (*childJobs, error) {
 	// Get all active jobs owned by JobSet.
 	var childJobList batchv1.JobList
 	if err := r.List(ctx, &childJobList, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
-		log.Error(err, "unable to list child Jobs")
+		klog.Error(err, "unable to list child Jobs")
 		return nil, err
 	}
 
@@ -206,63 +198,78 @@ func (r *JobSetReconciler) getChildJobs(ctx context.Context, jobSet *jobsetv1alp
 }
 
 // updateStatus
-func (r *JobSetReconciler) updateStatus(ctx context.Context, jobSet *jobsetv1alpha.JobSet, jobs *childJobs, log logr.Logger) error {
+func (r *JobSetReconciler) updateStatus(ctx context.Context, jobSet *jobsetv1alpha.JobSet, jobs *childJobs) error {
 	// TODO: Why is .Status.Active type []*corev1.ObjectReference instead of []*batchv1.Job?
 	// Is it because this is a generic way for kubebuilder to generate boilerplate data structures for CRDs?
 	jobSet.Status.Active = nil
 	for _, activeJob := range jobs.active {
 		jobRef, err := ref.GetReference(r.Scheme, activeJob)
 		if err != nil {
-			log.Error(err, "unable to make reference to active job", "job", activeJob)
+			klog.Error(err, "unable to make reference to active job", "job", activeJob)
 			continue
 		}
 		jobSet.Status.Active = append(jobSet.Status.Active, *jobRef)
 	}
 
 	if err := r.Status().Update(ctx, jobSet); err != nil {
-		log.Error(err, "unable to update JobSet status")
+		klog.Error(err, "unable to update JobSet status")
 		return err
 	}
-	log.V(1).Info("job count", "active jobs", len(jobs.active), "successful jobs", len(jobs.successful), "failed jobs", len(jobs.failed))
+	klog.V(1).Info("job count", "active jobs", len(jobs.active), "successful jobs", len(jobs.successful), "failed jobs", len(jobs.failed))
 	return nil
 }
 
-func (r *JobSetReconciler) createNewJobs(ctx context.Context, req ctrl.Request, jobSet *jobsetv1alpha.JobSet, jobs *childJobs, log logr.Logger) error {
-	// Create jobs as necessary.
-	for i, jobTemplate := range jobSet.Spec.Jobs {
+func (r *JobSetReconciler) createReadyJobs(ctx context.Context, req ctrl.Request, jobSet *jobsetv1alpha.JobSet) error {
+	for _, jobTemplate := range jobSet.Spec.Jobs {
 		job, err := r.constructJobFromTemplate(jobSet, &jobTemplate)
 		if err != nil {
-			log.Error(err, "unable to construct job from template", "jobTemplate", jobTemplate)
+			klog.Error(err, "unable to construct job from template", "jobTemplate", jobTemplate)
 			return err
 		}
-		// Skip this job if it is already active.
-		if isJobActive(jobs.active, job.Name) {
-			log.Info("job is already active", "job", job)
+
+		// Skip the job if it is already active or succeeded.
+		skip, err := r.shouldSkipJob(job)
+		if err != nil {
+			return err
+		}
+		if skip {
+			klog.Infof("skipping job %s", job.Name)
 			continue
 		}
 
-		// Only create job if previous job is ready and this job is not yet active.
-		if i == 0 || isPrevJobReady(jobs.active, jobSet.Spec.Jobs[i-1].Name) {
-			// First create headless service if specified for this job.
-			if jobTemplate.Network.HeadlessService != nil && *jobTemplate.Network.HeadlessService {
-				if err := r.createHeadlessSvcIfNotExist(ctx, req, jobSet, job, log); err != nil {
-					return err
-				}
-				// Update job spec to set subdomain as headless service name (will always be same as job name)
-				job.Spec.Template.Spec.Subdomain = job.Name
-			}
+		// Start the job if it is ready to start.
+		start, err := r.shouldStartJob(jobSet, job)
+		if err != nil {
+			return err
+		}
 
-			if err := r.Create(ctx, job); err != nil {
-				log.Error(err, "unable to create Job for JobSet", "job", job)
+		// If sequential startup is enabled, we can skip checking the remaining
+		// jobs if we cannot start this one.
+		if !start && jobSet.Spec.SequentialStartup != nil && *jobSet.Spec.SequentialStartup {
+			break
+		}
+
+		klog.Infof("creating job %s", job.Name)
+
+		// First create headless service if specified for this job.
+		if jobTemplate.Network.HeadlessService != nil && *jobTemplate.Network.HeadlessService {
+			if err := r.createHeadlessSvcIfNotExist(ctx, req, jobSet, job); err != nil {
 				return err
 			}
-			log.V(1).Info("created Job for JobSet run", "job", job)
+			// Update job spec to set subdomain as headless service name (will always be same as job name)
+			job.Spec.Template.Spec.Subdomain = job.Name
 		}
+
+		if err := r.Create(ctx, job); err != nil {
+			klog.Error(err, "unable to create Job for JobSet", "job", job)
+			return err
+		}
+		klog.V(1).Info("created Job for JobSet run", "job", job)
 	}
 	return nil
 }
 
-func (r *JobSetReconciler) createHeadlessSvcIfNotExist(ctx context.Context, req ctrl.Request, jobSet *jobsetv1alpha.JobSet, job *batchv1.Job, log logr.Logger) error {
+func (r *JobSetReconciler) createHeadlessSvcIfNotExist(ctx context.Context, req ctrl.Request, jobSet *jobsetv1alpha.JobSet, job *batchv1.Job) error {
 	// Check if service already exists. Service name is same as job name.
 	if _, err := r.KubeClientSet.CoreV1().Services(req.Namespace).Get(ctx, job.Name, metav1.GetOptions{}); err != nil {
 		headlessSvc := corev1.Service{
@@ -284,41 +291,115 @@ func (r *JobSetReconciler) createHeadlessSvcIfNotExist(ctx context.Context, req 
 		}
 		// set controller owner reference for garbage collection and reconcilation
 		if err := ctrl.SetControllerReference(jobSet, &headlessSvc, r.Scheme); err != nil {
-			log.Error(err, "error setting controller owner reference for headless service", "service", headlessSvc)
+			klog.Error(err, "error setting controller owner reference for headless service", "service", headlessSvc)
 			return err
 		}
 		if _, err := r.KubeClientSet.CoreV1().Services(req.Namespace).Create(ctx, &headlessSvc, metav1.CreateOptions{}); err != nil {
-			log.Error(err, "unable to create headless service", "service", headlessSvc)
+			klog.Error(err, "unable to create headless service", "service", headlessSvc)
 			return err
 		}
 	}
 	return nil
 }
 
-func isJobFinished(job *batchv1.Job) (bool, batchv1.JobConditionType) {
-	for _, c := range job.Status.Conditions {
-		if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == corev1.ConditionTrue {
-			return true, c.Type
-		}
+func (r *JobSetReconciler) shouldStartJob(jobSet *jobsetv1alpha.JobSet, job *batchv1.Job) (bool, error) {
+	jobIdx, err := jobIndex(jobSet, job)
+	if err != nil {
+		return false, err
 	}
-	return false, ""
+	// First job should always return true, since at this point we have already
+	// checked if the job should be skipped (i.e. is active or completed)
+	if jobIdx == 0 {
+		return true, nil
+	}
+
+	// If sequential startup is enabled, job cannot start until prev job is ready
+	if jobSet.Spec.SequentialStartup != nil && *jobSet.Spec.SequentialStartup {
+		prevJobTemplate := jobSet.Spec.Jobs[jobIdx-1]
+		prevJob, err := r.constructJobFromTemplate(jobSet, &prevJobTemplate)
+		if err != nil {
+			klog.Errorf("error constructing job from template: %v", err)
+			return false, err
+		}
+		ready, err := r.isJobReady(prevJob)
+		if err != nil {
+			klog.Errorf("error checking if job is ready: %v", err)
+			return false, err
+		}
+		return ready, nil
+	}
+	// Otherwise job can start immediately
+	return true, nil
 }
 
-// TODO: is there a better way to check this?
-func isJobActive(activeJobs []*batchv1.Job, jobName string) bool {
-	for _, job := range activeJobs {
-		if job.Name == jobName {
-			return true
+func (r *JobSetReconciler) shouldSkipJob(job *batchv1.Job) (bool, error) {
+	// Get updated job status
+	job, err := r.KubeClientSet.BatchV1().Jobs(job.Namespace).Get(context.Background(), job.Name, metav1.GetOptions{})
+	if err != nil {
+		// if job does not exist yet, do not skip it, since it needs to be created
+		klog.Infof(err.Error())
+		if strings.Contains(err.Error(), "not found") {
+			return false, nil
 		}
+		return false, err
 	}
-	return false
+	_, finishedType := isJobFinished(job)
+
+	switch finishedType {
+	case "":
+		// If job is already active, skip it
+		return true, nil
+	// If job has failed, don't skip (recreate it)
+	case batchv1.JobFailed:
+		return false, nil
+	// If job is complete, don't restart it
+	case batchv1.JobComplete:
+		return true, nil
+	// Skip suspended jobs (TODO: is this the correct behavior?)
+	case batchv1.JobSuspended:
+		return true, nil
+	// Skip if job is about to fail, we will restart it once it actually fails
+	case batchv1.JobFailureTarget:
+		return true, nil
+	// This default should never be reached but is here for future proofing against new conditions
+	default:
+		return true, nil
+	}
 }
 
-func isPrevJobReady(activeJobs []*batchv1.Job, prevJobName string) bool {
-	for _, job := range activeJobs {
-		if job.Name == prevJobName && job.Status.Ready == job.Spec.Parallelism {
-			return true
+func (r *JobSetReconciler) isJobReady(job *batchv1.Job) (bool, error) {
+	// Get updated job status
+	job, err := r.KubeClientSet.BatchV1().Jobs(job.Namespace).Get(context.Background(), job.Name, metav1.GetOptions{})
+	if err != nil {
+		// if job does not exist yet, it is not ready
+		if strings.Contains(err.Error(), "not found") {
+			return false, nil
 		}
+		return false, err
 	}
-	return false
+	_, finishedType := isJobFinished(job)
+
+	switch finishedType {
+	case "":
+		// Job is ready if it is active and number of ready pods == paralellism
+		if job.Status.Ready != nil && job.Spec.Parallelism != nil && *job.Status.Ready == *job.Spec.Parallelism {
+			return true, nil
+		}
+		return false, nil
+	// Failed job is not ready
+	case batchv1.JobFailed:
+		return false, nil
+	// Complete job is considered ready
+	case batchv1.JobComplete:
+		return true, nil
+	// Suspended job is not ready
+	case batchv1.JobSuspended:
+		return false, nil
+	// Job that is about to fail is not ready
+	case batchv1.JobFailureTarget:
+		return false, nil
+	// This default should never be reached but is here for future proofing against new conditions
+	default:
+		return false, nil
+	}
 }

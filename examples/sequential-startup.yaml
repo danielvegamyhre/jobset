@@ -1,0 +1,88 @@
+apiVersion: batch.x-k8s.io/v1alpha1
+kind: JobSet
+metadata:
+  name: sequential-startup
+  labels:
+    app.kubernetes.io/name: jobset
+    app.kubernetes.io/instance: jobset-example
+    app.kubernetes.io/part-of: project
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: project
+spec:
+  sequentialStartup: true
+  jobs:
+  - name: worker1-template
+    network: 
+      headlessService: true
+    template:
+      metadata:
+        name: "worker1-job"
+      spec:
+        completionMode: Indexed
+        parallelism: 4
+        completions: 4
+        template:
+          spec:
+            restartPolicy: Never
+            initContainers:
+            - name: dummy-sleep
+              image: busybox:latest
+              command:
+              - sleep
+              - "10"
+            containers:
+            - name: busybox-short-sleep
+              image: busybox:latest
+              command:
+              - sleep
+              - "60" 
+  - name: worker2-template
+    network: 
+      headlessService: true
+    template:
+      metadata:
+        name: "worker2-job"
+      spec:
+        completionMode: Indexed
+        parallelism: 4
+        completions: 4
+        template:
+          spec:
+            restartPolicy: Never
+            initContainers:
+            - name: dummy-sleep
+              image: busybox:latest
+              command:
+              - sleep
+              - "10"
+            containers:
+            - name: busybox1
+              image: busybox:latest
+              command:
+              - sleep
+              - "60" 
+  - name: worker3-template
+    network: 
+      headlessService: true
+    template:
+      metadata:
+        name: "worker3-job"
+      spec:
+        completionMode: Indexed
+        parallelism: 4
+        completions: 4
+        template:
+          spec:
+            restartPolicy: Never
+            initContainers:
+            - name: dummy-sleep
+              image: busybox:latest
+              command:
+              - sleep
+              - "10"
+            containers:
+            - name: busybox
+              image: busybox:latest      
+              command:
+              - sleep
+              - "30"                      

@@ -63,6 +63,23 @@ spec:
                         metadata:
                           description: 'Standard object''s metadata of the jobs created
                             from this template. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata'
+                          properties:
+                            annotations:
+                              additionalProperties:
+                                type: string
+                              type: object
+                            finalizers:
+                              items:
+                                type: string
+                              type: array
+                            labels:
+                              additionalProperties:
+                                type: string
+                              type: object
+                            name:
+                              type: string
+                            namespace:
+                              type: string
                           type: object
                         spec:
                           description: 'Specification of the desired behavior of the
@@ -342,6 +359,23 @@ spec:
                                 metadata:
                                   description: 'Standard object''s metadata. More
                                     info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata'
+                                  properties:
+                                    annotations:
+                                      additionalProperties:
+                                        type: string
+                                      type: object
+                                    finalizers:
+                                      items:
+                                        type: string
+                                      type: array
+                                    labels:
+                                      additionalProperties:
+                                        type: string
+                                      type: object
+                                    name:
+                                      type: string
+                                    namespace:
+                                      type: string
                                   type: object
                                 spec:
                                   description: 'Specification of the desired behavior
@@ -7824,6 +7858,23 @@ spec:
                                                       it. No other fields are allowed
                                                       and will be rejected during
                                                       validation.
+                                                    properties:
+                                                      annotations:
+                                                        additionalProperties:
+                                                          type: string
+                                                        type: object
+                                                      finalizers:
+                                                        items:
+                                                          type: string
+                                                        type: array
+                                                      labels:
+                                                        additionalProperties:
+                                                          type: string
+                                                        type: object
+                                                      name:
+                                                        type: string
+                                                      namespace:
+                                                        type: string
                                                     type: object
                                                   spec:
                                                     description: The specification
@@ -9365,6 +9416,11 @@ spec:
                   - network
                   type: object
                 type: array
+              sequentialStartup:
+                description: If sequentialStartup if set, then spec.jobs will be created
+                  one at a time according to their order in the list. A job is created
+                  only after the pods of the previous one are Ready.
+                type: boolean
             required:
             - jobs
             type: object

@@ -1,0 +1,54 @@
+apiVersion: batch.x-k8s.io/v1alpha1
+kind: JobSet
+metadata:
+  name: pytorch-jobset
+  labels:
+    app.kubernetes.io/name: jobset
+    app.kubernetes.io/instance: jobset-example
+    app.kubernetes.io/part-of: project
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: project
+spec:
+  jobs:
+  - name: pytorch-worker
+    network: 
+      headlessService: true
+    template:
+      metadata:
+        name: "pytorch-job"
+      spec:
+        completionMode: Indexed
+        parallelism: 4
+        completions: 4
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: pytorch
+              image: gcr.io/danielvm-gke-dev2/pytorch-resnet:latest
+              imagePullPolicy: Always
+              ports:
+              - containerPort: 3389
+              env:
+              - name: MASTER_ADDR
+                value: pytorch-worker-0.pytorch-worker
+              - name: MASTER_PORT
+                value: "3389"
+              - name: WORLD_SIZE
+                value: "4"
+              - name: RANK
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+              # debugging env vars
+              - name: PYTHONBUFFERED
+                value: "0"
+              - name: LOGLEVEL
+                value: "INFO"
+              - name: TORCH_CPP_LOG_LEVEL
+                value: "INFO" 
+              command:
+              - bash
+              - -xc
+              - |
+                torchrun --nproc_per_node=1 --nnodes=$WORLD_SIZE --node_rank=$RANK --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT resnet.py --backend=gloo

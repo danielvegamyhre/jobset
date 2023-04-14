@@ -389,6 +389,44 @@ func (r *JobSetReconciler) constructJobsFromTemplate(js *jobset.JobSet, rjob *jo
 			job.Spec.Template.Spec.Subdomain = job.Name
 		}
 
+		// Set podAffinity and podAntiAffinity based on the topology key defined in the replicated job.
+		var topologyKey string
+		if rjob.Exclusive != nil {
+			topologyKey = rjob.Exclusive.TopologyKey
+		}
+		job.Spec.Template.Spec.Affinity = &corev1.Affinity{
+			// Ensures the pods of this job land on the same infrastructure as defined by the topology key.
+			PodAffinity: &corev1.PodAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+					{
+						LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "job-name",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{job.Name},
+							},
+						}},
+						TopologyKey: topologyKey,
+					},
+				},
+			},
+			// Ensures only this job lands on the infrastructure as defined by the topology key.
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+					{
+						LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "job-name",
+								Operator: metav1.LabelSelectorOpNotIn,
+								Values:   []string{job.Name, ""},
+							},
+						}},
+						TopologyKey: topologyKey,
+					},
+				},
+			},
+		}
+
 		// Set controller owner reference for garbage collection and reconcilation.
 		if err := ctrl.SetControllerReference(js, job, r.Scheme); err != nil {
 			return nil, err

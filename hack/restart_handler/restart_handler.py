@@ -76,8 +76,10 @@ async def main(namespace: str):
     global main_process
 
     try: 
+        # for in cluster testing
         config.load_incluster_config()
     except:
+        # for local testing
         config.load_kube_config()
 
     # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process

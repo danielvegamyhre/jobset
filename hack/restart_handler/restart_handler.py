@@ -5,7 +5,6 @@ import subprocess
 import sys
 import time
 import asyncio
-import argparse
 import time
 import logging
 from datetime import datetime
@@ -82,8 +81,9 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
     """Asynchronously use kubectl-exec to send a SIGUSR1 signal to PID 1 (wrapper process)
     in each pod in the given namespace in the cluster."""
     # command to send SIGUSR1 signal to PID 1 in a container
-    exec_command = ["/bin/bash","-c","kill","-SIGUSR1","1"]
+    exec_command = ["kill","-SIGUSR1","1"]
 
+    logger.debug(f"sending signal to pod: {pod_name}")
     # kubectl exec asynchronously so we broadcast to pods concurrently
     resp = await asyncio.to_thread(
                     stream, # callable, followed by args
@@ -98,7 +98,6 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
 
 async def main(namespace: str):
     global main_process
-
     try: 
         # for in cluster testing
         config.load_incluster_config()
@@ -122,14 +121,14 @@ async def main(namespace: str):
                 break
             
             logger.debug("Main command failed. Broadcasting restart signal...")
+            start = time.perf_counter()
             await broadcast_restart_signal(namespace)
             main_process = start_main_process()  # restart the main process
+            restart_latency = time.perf_counter() - start
+            logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
         
         await asyncio.sleep(1)  # sleep to avoid excessive polling
 
 
 if __name__ == "__main__":
-#    argparser = argparse.ArgumentParser()
-#    argparser.add_argument("--namespace", type=str, default="default")
-#    args = argparser.parse_args()
     asyncio.run(main("default"))

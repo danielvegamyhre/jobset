@@ -75,7 +75,10 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
 async def main(namespace: str):
     global main_process
 
-    config.load_kube_config()
+    try: 
+        config.load_incluster_config()
+    except:
+        config.load_kube_config()
 
     # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process
     # that it must restart the main process.

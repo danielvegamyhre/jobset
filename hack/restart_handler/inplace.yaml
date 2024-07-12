@@ -18,11 +18,11 @@ spec:
             - name: redis
               image: redis:7.0-alpine 
   - name: workers
-    replicas: 1 # 5 node pools
+    replicas: 1
     template:
       spec:
-        parallelism: 3 # 2000 nodes per pool
-        completions: 3
+        parallelism: 4500
+        completions: 4500
         backoffLimit: 0
         template:
           spec:
@@ -32,7 +32,7 @@ spec:
               image: python:3.10
               env:
               - name: USER_COMMAND
-                value: "sleep 1000"
+                value: "for i in $(seq 1 1000); do echo $i; sleep 1; done"
               - name: POD_NAME
                 valueFrom:
                   fieldRef:
@@ -51,5 +51,5 @@ spec:
                 - |
                   curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/restart_handler.py > restart_handler.py
                   python3 -m pip install kubernetes redis
-                  python3 restart_handler.py $USER_COMMAND
+                  python3 restart_handler.py
  

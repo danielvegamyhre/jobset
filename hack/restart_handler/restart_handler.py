@@ -43,6 +43,7 @@ POD_NAME_ENV = "POD_NAME"
 REDIS_HOST_ENV = "REDIS_HOST"
 REDIS_PORT_ENV = "REDIS_PORT"
 JOBSET_NAME_ENV = "JOBSET_NAME"
+USER_COMMAND_ENV = "USER_COMMAND"
 
 class RestartHandler:
     def __init__(self):
@@ -76,9 +77,12 @@ class RestartHandler:
         return success
 
     def release_lock(self):
+        """Release lock by deleting the lock key in Redis."""
         self.redis_client.delete(self.redis_lock_name)
 
     def get_pod_names(self, namespace: str = "default") -> list[str]:
+        """Get all pods owned by the given JobSet, except the Redis pod and the
+        pod the handler is currently running in."""
         self_pod_name = os.getenv(POD_NAME_ENV)
         pods = client.CoreV1Api().list_namespaced_pod(namespace)
         # filter out self pod name and redis pod
@@ -86,20 +90,24 @@ class RestartHandler:
 
     def handle_restart_signal(self, signum, frame):
         """Signal handler for SIGUSR1 (restart)."""
-        logger.debug("Restart signal received. Restarting main command...")
+        logger.debug("Restart signal received. Restarting main process...")
         os.kill(main_process.pid, signal.SIGKILL)
         self.start_main_process()
 
     def start_main_process(self):
         """Starts the main command and returns the Popen object."""
         global main_process
-        main_command_parts = sys.argv[1:]
-        main_command = " ".join(main_command_parts)
+        main_command = os.getenv(USER_COMMAND_ENV, None)
+        if not main_command:
+            raise ValueError(f"environment variable {USER_COMMAND_ENV} must be set.")
         logger.debug(f"Running main command: {main_command}")
         main_process = subprocess.Popen(main_command, shell=True)
         return main_process
 
     async def broadcast_restart_signal(self, namespace: str = "default"):
+        """Attemp to acquire a lock and concurrently broadcast restart signals to all worker pods
+        in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
+        this means another pod is already broadcasting the restart signal."""
         # acquire lock
         if not self.acquire_lock():
             return

@@ -7,6 +7,7 @@ import time
 import asyncio
 import time
 import logging
+import redis
 from datetime import datetime
 
 from kubernetes import client, config
@@ -39,66 +40,109 @@ logger.addHandler(console_handler)
 # constants
 WRAPPER_CONTAINER_NAME = "wrapper"
 POD_NAME_ENV = "POD_NAME"
+REDIS_HOST_ENV = "REDIS_HOST"
+REDIS_PORT_ENV = "REDIS_PORT"
+JOBSET_NAME_ENV = "JOBSET_NAME"
 
-# global vars
-main_process = None
+class RestartHandler:
+    def __init__(self):
+        self.main_process = None
+        self.redis_lock_name = self._get_lock_name()
+        self.redis_client = self._init_redis_client()
 
-def get_pod_names(namespace: str = "default") -> list[str]:
-    pods = client.CoreV1Api().list_namespaced_pod(namespace)
-    return [pod.metadata.name for pod in pods.items]
+    def _get_lock_name(self):
+        # use jobset name as lock name
+        lock_name = os.getenv(JOBSET_NAME_ENV, None)
+        if not lock_name:
+            raise ValueError(f"environment variables {JOBSET_NAME_ENV} must be set.")
+        return lock_name
 
-def handle_restart_signal(signum, frame):
-    """Signal handler for SIGUSR1 (restart)."""
-    logger.debug("Restart signal received. Restarting main command...")
-    os.kill(main_process.pid, signal.SIGKILL)
-    start_main_process()
+    def _init_redis_client(self):
+        # get Redis service details from env vars
+        redis_host = os.environ.get(REDIS_HOST_ENV, None)
+        redis_port = os.environ.get(REDIS_PORT_ENV, None)
+        if not redis_host or not redis_port:
+            raise ValueError(f"environment variables {REDIS_HOST_ENV} and {REDIS_PORT_ENV} must both be set.")
 
-def start_main_process():
-    """Starts the main command and returns the Popen object."""
-    global main_process
-    main_command_parts = sys.argv[1:]
-    main_command = " ".join(main_command_parts)
-    logger.debug(f"Running main command: {main_command}")
-    main_process = subprocess.Popen(main_command, shell=True)
-    return main_process
+        # set up redis client
+        client = redis.Redis(host=redis_host, port=redis_port)
+        logger.debug(f"succesfully set up redis client: {client}")
+        return client
+     
+    def acquire_lock(self) -> bool:
+        """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if
+        lock was successfully acquired or not (i.e., it is already held by another process)."""
+        success = self.redis_client.setnx(self.redis_lock_name, 1)
+        return success
 
-async def broadcast_restart_signal(namespace: str = "default"):
-    # create coroutines
-    tasks = [
-        asyncio.create_task(exec_restart_command(pod_name, namespace))
-        for pod_name in get_pod_names() if pod_name != os.getenv(POD_NAME_ENV)
-    ]
-    # await concurrent execution of coroutines to complete
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for result in results:
-        if isinstance(result, Exception):
-            logger.debug(f"Failed to broadcast signal to pod: {result}")
-        else:
-            logger.debug(f"") 
-    logger.debug("Finished broadcasting restart signal")
+    def release_lock(self):
+        self.redis_client.delete(self.redis_lock_name)
 
+    def get_pod_names(self, namespace: str = "default") -> list[str]:
+        self_pod_name = os.getenv(POD_NAME_ENV)
+        pods = client.CoreV1Api().list_namespaced_pod(namespace)
+        # filter out self pod name and redis pod
+        return [pod.metadata.name for pod in pods.items if "redis" not in pod.metadata.name if pod.metadata.name != self_pod_name]
 
-async def exec_restart_command(pod_name: str, namespace: str = "default"):
-    """Asynchronously use kubectl-exec to send a SIGUSR1 signal to PID 1 (wrapper process)
-    in each pod in the given namespace in the cluster."""
-    # command to send SIGUSR1 signal to PID 1 in a container
-    exec_command = ["kill","-SIGUSR1","1"]
+    def handle_restart_signal(self, signum, frame):
+        """Signal handler for SIGUSR1 (restart)."""
+        logger.debug("Restart signal received. Restarting main command...")
+        os.kill(main_process.pid, signal.SIGKILL)
+        self.start_main_process()
 
-    logger.debug(f"sending signal to pod: {pod_name}")
-    # kubectl exec asynchronously so we broadcast to pods concurrently
-    resp = await asyncio.to_thread(
-                    stream, # callable, followed by args
-                    client.CoreV1Api().connect_get_namespaced_pod_exec,
-                    pod_name,
-                    namespace,
-                    container=WRAPPER_CONTAINER_NAME,
-                    command=exec_command,
-                    stderr=True, stdin=False,
-                    stdout=True, tty=False)
-    logger.debug(f"pod {pod_name} response to restart signal: {resp}")
+    def start_main_process(self):
+        """Starts the main command and returns the Popen object."""
+        global main_process
+        main_command_parts = sys.argv[1:]
+        main_command = " ".join(main_command_parts)
+        logger.debug(f"Running main command: {main_command}")
+        main_process = subprocess.Popen(main_command, shell=True)
+        return main_process
+
+    async def broadcast_restart_signal(self, namespace: str = "default"):
+        # acquire lock
+        if not self.acquire_lock():
+            return
+
+        logger.debug(f"pod {os.getenv(POD_NAME_ENV)} acquired lock")
+
+        # create coroutines
+        tasks = [
+            asyncio.create_task(self.exec_restart_command(pod_name, namespace))
+            for pod_name in self.get_pod_names()
+        ]
+        # await concurrent execution of coroutines to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug(f"Failed to broadcast signal to pod: {result}")
+            else:
+                logger.debug(f"") 
+        logger.debug("Finished broadcasting restart signal")
+        self.release_lock()
+        logger.debug(f"pod {os.getenv(POD_NAME_ENV)} released lock")
+
+    async def exec_restart_command(self, pod_name: str, namespace: str = "default"):
+        """Asynchronously use kubectl-exec to send a SIGUSR1 signal to PID 1 (wrapper process)
+        in each pod in the given namespace in the cluster."""
+        # command to send SIGUSR1 signal to PID 1 in a container
+        exec_command = ["kill","-SIGUSR1","1"]
+
+        logger.debug(f"sending signal to pod: {pod_name}")
+        
+        # kubectl exec asynchronously so we broadcast to pods concurrently
+        resp = await asyncio.to_thread(
+                        stream, # callable, followed by args
+                        client.CoreV1Api().connect_get_namespaced_pod_exec,
+                        pod_name,
+                        namespace,
+                        container=WRAPPER_CONTAINER_NAME,
+                        command=exec_command,
+                        stderr=True, stdin=False,
+                        stdout=True, tty=False)
+        logger.debug(f"pod {pod_name} response to restart signal: {resp}")
 
 async def main(namespace: str):
-    global main_process
     try: 
         # for in cluster testing
         config.load_incluster_config()
@@ -106,12 +150,15 @@ async def main(namespace: str):
         # for local testing
         config.load_kube_config()
 
+    # set up restart handler
+    restart_handler = RestartHandler()
+
     # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process
     # that it must restart the main process.
-    signal.signal(signal.SIGUSR1, handle_restart_signal)
+    signal.signal(signal.SIGUSR1, restart_handler.handle_restart_signal)
 
     # start the main process
-    main_process = start_main_process()
+    main_process = restart_handler.start_main_process()
 
     # monitor the main process
     while True:
@@ -124,8 +171,8 @@ async def main(namespace: str):
             logger.debug("Main command failed. Broadcasting restart signal...")
             start = time.perf_counter()
 
-            await broadcast_restart_signal(namespace)   # broadcast restart signal
-            main_process = start_main_process()         # restart main process
+            await restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
+            main_process = restart_handler.start_main_process()         # restart main process
 
             restart_latency = time.perf_counter() - start
             logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")

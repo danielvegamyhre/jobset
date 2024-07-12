@@ -1,0 +1,55 @@
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: inplace
+spec:
+  replicatedJobs:
+  - name: redis
+    replicas: 1
+    template:
+      spec:
+        parallelism: 1
+        completions: 1
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: redis
+              image: redis:7.0-alpine 
+  - name: workers
+    replicas: 1 # 5 node pools
+    template:
+      spec:
+        parallelism: 3 # 2000 nodes per pool
+        completions: 3
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: wrapper
+              image: python:3.10
+              env:
+              - name: USER_COMMAND
+                value: "sleep 1000"
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              - name: REDIS_HOST
+                value: inplace-redis-0-0.inplace # ${JOBSET}-${REPLICATED_JOB}-${JOB_INDEX}-${POD_INDEX}.${SERVICE}
+              - name: REDIS_PORT
+                value: "6739"
+              - name: JOBSET_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['jobset.sigs.k8s.io/jobset-name']
+              command: 
+                - bash
+                - -xc
+                - |
+                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/restart_handler.py > restart_handler.py
+                  python3 -m pip install kubernetes redis
+                  python3 restart_handler.py $USER_COMMAND
+ 

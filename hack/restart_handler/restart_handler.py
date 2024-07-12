@@ -131,7 +131,7 @@ class RestartHandler:
         logger.debug(f"sending signal to pod: {pod_name}")
         
         # kubectl exec asynchronously so we broadcast to pods concurrently
-        resp = await asyncio.to_thread(
+        await asyncio.to_thread(
                         stream, # callable, followed by args
                         client.CoreV1Api().connect_get_namespaced_pod_exec,
                         pod_name,
@@ -140,7 +140,6 @@ class RestartHandler:
                         command=exec_command,
                         stderr=True, stdin=False,
                         stdout=True, tty=False)
-        logger.debug(f"pod {pod_name} response to restart signal: {resp}")
 
 async def main(namespace: str):
     try: 

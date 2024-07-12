@@ -40,7 +40,7 @@ spec:
               - name: REDIS_HOST
                 value: inplace-redis-0-0.inplace # ${JOBSET}-${REPLICATED_JOB}-${JOB_INDEX}-${POD_INDEX}.${SERVICE}
               - name: REDIS_PORT
-                value: "6739"
+                value: "6379"
               - name: JOBSET_NAME
                 valueFrom:
                   fieldRef:

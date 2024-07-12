@@ -30,6 +30,10 @@ spec:
               env:
               - name: USER_COMMAND
                 value: "sleep 1000"
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
               command: 
                 - bash
                 - -xc

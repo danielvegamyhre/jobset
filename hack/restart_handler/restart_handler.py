@@ -38,6 +38,7 @@ logger.addHandler(console_handler)
 
 # constants
 WRAPPER_CONTAINER_NAME = "wrapper"
+POD_NAME_ENV = "POD_NAME"
 
 # global vars
 main_process = None
@@ -65,7 +66,7 @@ async def broadcast_restart_signal(namespace: str = "default"):
     # create coroutines
     tasks = [
         asyncio.create_task(exec_restart_command(pod_name, namespace))
-        for pod_name in get_pod_names()
+        for pod_name in get_pod_names() if pod_name != os.getenv(POD_NAME_ENV)
     ]
     # await concurrent execution of coroutines to complete
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -122,13 +123,14 @@ async def main(namespace: str):
             
             logger.debug("Main command failed. Broadcasting restart signal...")
             start = time.perf_counter()
-            await broadcast_restart_signal(namespace)
-            main_process = start_main_process()  # restart the main process
+
+            await broadcast_restart_signal(namespace)   # broadcast restart signal
+            main_process = start_main_process()         # restart main process
+
             restart_latency = time.perf_counter() - start
             logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
         
         await asyncio.sleep(1)  # sleep to avoid excessive polling
-
 
 if __name__ == "__main__":
     asyncio.run(main("default"))

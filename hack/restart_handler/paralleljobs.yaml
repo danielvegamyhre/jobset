@@ -1,0 +1,40 @@
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: paralleljobs
+spec:
+  replicatedJobs:
+  - name: workers
+    template:
+      spec:
+        parallelism: 4
+        completions: 4
+        backoffLimit: 0
+        # podFailurePolicy:
+        #   rules:
+        #     - action: Ignore # don't count pod failure toward backoffLimit
+        #       onPodConditions: []
+        #       onExitCodes:
+        #         containerName: sleep
+        #         operator: In
+        #         values: [9] # SIGKILL
+        template:
+          spec:
+            # needed since PID 1 is unkillable, this uses PID 1 as the pause container which holds
+            # network namespaces for all containers in a pod
+            # shareProcessNamespace: true
+            restartPolicy: OnFailure
+            containers:
+            - name: wrapper
+              image: python:3.10
+              env:
+              - name: USER_COMMAND
+                value: "sleep 1000"
+              command: 
+                - bash
+                - -xc
+                - |
+                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/restart_handler.py > restart_handler.py
+                  python3 -m pip install kubernetes
+                  python3 restart_handler.py $USER_COMMAND
+ 

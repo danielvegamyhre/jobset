@@ -6,8 +6,8 @@ import sys
 import time
 import asyncio
 import argparse
-
 import time
+import logging
 from datetime import datetime
 
 from kubernetes import client, config
@@ -15,6 +15,27 @@ from kubernetes.client import Configuration
 from kubernetes.client.api import core_v1_api
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
+
+# Create a logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Set the overall logging level
+
+# Create file handler (for writing to a file)
+file_handler = logging.FileHandler('restart_handler.log')  # Choose your log file name
+file_handler.setLevel(logging.DEBUG)  # Set the level for this handler
+
+# Create console handler (for writing to stdout)
+console_handler = logging.StreamHandler()  # Defaults to sys.stderr
+console_handler.setLevel(logging.DEBUG)   # Set the level for this handler (e.g., only INFO and above)
+
+# Create formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 # constants
 WRAPPER_CONTAINER_NAME = "wrapper"

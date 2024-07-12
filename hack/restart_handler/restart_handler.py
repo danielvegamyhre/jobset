@@ -73,6 +73,8 @@ async def broadcast_restart_signal(namespace: str = "default"):
     for result in results:
         if isinstance(result, Exception):
             logger.debug(f"Failed to broadcast signal to pod: {result}")
+        else:
+            logger.debug(f"") 
     logger.debug("Finished broadcasting restart signal")
 
 
@@ -80,7 +82,7 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
     """Asynchronously use kubectl-exec to send a SIGUSR1 signal to PID 1 (wrapper process)
     in each pod in the given namespace in the cluster."""
     # command to send SIGUSR1 signal to PID 1 in a container
-    exec_command = ["/bin/sh","-c","kill","-SIGUSR1","1"]
+    exec_command = ["/bin/bash","-c","kill","-SIGUSR1","1"]
 
     # kubectl exec asynchronously so we broadcast to pods concurrently
     resp = await asyncio.to_thread(
@@ -92,6 +94,7 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
                     command=exec_command,
                     stderr=True, stdin=False,
                     stdout=True, tty=False)
+    logger.debug(f"pod {pod_name} response to restart signal: {resp}")
 
 async def main(namespace: str):
     global main_process

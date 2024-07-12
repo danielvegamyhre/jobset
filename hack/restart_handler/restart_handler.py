@@ -63,14 +63,14 @@ async def exec_restart_command(pod_name: str, namespace: str = "default"):
 
     # kubectl exec asynchronously so we broadcast to pods concurrently
     resp = await asyncio.to_thread(
-            stream(client.CoreV1Api().connect_get_namespaced_pod_exec,
-                  pod_name,
-                  namespace,
-                  container=WRAPPER_CONTAINER_NAME,
-                  command=exec_command,
-                  stderr=True, stdin=False,
-                  stdout=True, tty=False)
-            )
+                    stream, # callable, followed by args
+                    client.CoreV1Api().connect_get_namespaced_pod_exec,
+                    pod_name,
+                    namespace,
+                    container=WRAPPER_CONTAINER_NAME,
+                    command=exec_command,
+                    stderr=True, stdin=False,
+                    stdout=True, tty=False)
 
 async def main(namespace: str):
     global main_process

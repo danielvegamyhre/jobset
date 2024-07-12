@@ -38,7 +38,7 @@ def start_main_process():
     main_command_parts = sys.argv[1:]
     main_command = " ".join(main_command_parts)
     print(f"Running main command: {main_command}")
-    main_process = subprocess.Popen(main_command_parts)
+    main_process = subprocess.Popen(main_command, shell=True)
     return main_process
 
 async def broadcast_restart_signal(namespace: str = "default"):

@@ -184,7 +184,7 @@ async def main(namespace: str):
             restart_latency = time.perf_counter() - start
             logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
 
-            time.sleep(10)
+            time.sleep(120)
             restart_handler.release_lock()
         
         await asyncio.sleep(1)  # sleep to avoid excessive polling

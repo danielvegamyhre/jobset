@@ -93,6 +93,7 @@ class RestartHandler:
         logger.debug("Restart signal received. Restarting main process...")
         os.kill(main_process.pid, signal.SIGKILL)
         self.start_main_process()
+        logger.debug("Successfully restarted main process")
 
     def start_main_process(self):
         """Starts the main command and returns the Popen object."""
@@ -183,7 +184,7 @@ async def main(namespace: str):
             restart_latency = time.perf_counter() - start
             logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
 
-            time.sleep(5)
+            time.sleep(10)
             restart_handler.release_lock()
         
         await asyncio.sleep(1)  # sleep to avoid excessive polling

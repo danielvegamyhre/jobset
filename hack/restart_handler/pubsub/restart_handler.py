@@ -52,6 +52,7 @@ class RestartHandler:
         self.redis_lock_name = self._get_lock_name()
         self.redis_client = self._init_redis_client()
         self.redis_pubsub = self.redis_client.pubsub()
+        self.redis_pubsub.subscribe(restarts_channel)
         self.pod_name = os.getenv(POD_NAME_ENV)
 
     def _get_lock_name(self):
@@ -98,6 +99,7 @@ class RestartHandler:
             raise ValueError(f"environment variable {USER_COMMAND_ENV} must be set.")
         logger.debug(f"Running main command: {main_command}")
         main_process = subprocess.Popen(main_command, shell=True)
+        self.main_process = main_process
         return main_process
 
     def broadcast_restart_signal(self, namespace: str = "default"):
@@ -113,9 +115,8 @@ class RestartHandler:
             self.release_lock()
 
     def signal_handler(self):
-        while True:
-            sender: str = self.redis_pubsub.get_message()
-            logger.debug(f"Received restart signal from {sender}, restarting main process (PID: {self.main_process.pid})")
+        for message in self.redis_pubsub.listen():
+            logger.debug(f"Received restart signal from {message}, restarting main process (PID: {self.main_process.pid})")
             os.kill(self.main_process.pid, signal.SIGKILL)
             self.start_main_process()
             logger.debug("Successfully restarted main process")

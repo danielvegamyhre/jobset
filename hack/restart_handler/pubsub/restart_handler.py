@@ -121,7 +121,7 @@ class RestartHandler:
                 logger.debug("not a restart signal")
 
     def _is_restart_signal(self, msg: dict) -> bool:
-        return msg.get["type"] == "message" and not msg["data"].decode() == self.pod_name
+        return msg["type"] == "message" and not msg["data"].decode() == self.pod_name
 
 
 def main(namespace: str):

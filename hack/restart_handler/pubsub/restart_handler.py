@@ -116,10 +116,17 @@ class RestartHandler:
 
     def signal_handler(self):
         for message in self.redis_pubsub.listen():
-            logger.debug(f"Received restart signal from {message}, restarting main process (PID: {self.main_process.pid})")
-            os.kill(self.main_process.pid, signal.SIGKILL)
-            self.start_main_process()
-            logger.debug("Successfully restarted main process")
+            if self._is_restart_signal(message):
+                logger.debug(f"Received restart signal from {message}, restarting main process (PID: {self.main_process.pid})")
+                os.kill(self.main_process.pid, signal.SIGKILL)
+                self.start_main_process()
+                logger.debug("Successfully restarted main process")
+
+    def _is_restart_signal(self, msg: dict) -> bool:
+        is_msg = msg.get("type", "") == 'message'
+        from_self = msg.get("data", "").decode() == self.pod_name
+        return is_msg and not from_self
+
 
 def main(namespace: str):
     try: 

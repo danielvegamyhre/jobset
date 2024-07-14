@@ -131,10 +131,6 @@ def main(namespace: str):
     # set up restart handler
     restart_handler = RestartHandler()
 
-    # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process
-    # that it must restart the main process.
-    signal.signal(signal.SIGUSR1, restart_handler.handle_restart_signal)
-
     # start the main process
     main_process = restart_handler.start_main_process()
 

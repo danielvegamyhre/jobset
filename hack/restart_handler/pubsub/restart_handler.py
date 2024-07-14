@@ -116,20 +116,25 @@ class RestartHandler:
 
     def signal_handler(self):
         for message in self.redis_pubsub.listen():
+            logger.debug(f"received message: {message}")
             if self._is_restart_signal(message):
                 logger.debug(f"Received restart signal from {message}, restarting main process (PID: {self.main_process.pid})")
                 os.kill(self.main_process.pid, signal.SIGKILL)
                 self.start_main_process()
                 logger.debug("Successfully restarted main process")
+            else:
+                logger.debug("not a restart signal")
 
     def _is_restart_signal(self, msg: dict) -> bool:
         # filter non-messages
-        is_msg = msg.get("type", "") == 'message'
+        is_msg = msg.get("type", "") == "message"
         if not is_msg:
+            logger.debug("not message")
             return False
         # filter data which is not of type bytes (expected signal is in format b'{podname}')
         data = msg.get("data", "")
         if not isinstance(data, bytes):
+            logger.debug("not bytes")
             return False
         # filter msgs from self
         from_self = data.decode() == self.pod_name

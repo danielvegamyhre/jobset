@@ -123,9 +123,17 @@ class RestartHandler:
                 logger.debug("Successfully restarted main process")
 
     def _is_restart_signal(self, msg: dict) -> bool:
+        # filter non-messages
         is_msg = msg.get("type", "") == 'message'
-        from_self = str(msg.get("data", "")).decode() == self.pod_name
-        return is_msg and not from_self
+        if not is_msg:
+            return False
+        # filter data which is not of type bytes (expected signal is in format b'{podname}')
+        data = msg.get("data", "")
+        if not isinstance(data, bytes):
+            return False
+        # filter msgs from self
+        from_self = data.decode() == self.pod_name
+        return not from_self
 
 
 def main(namespace: str):

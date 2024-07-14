@@ -8,8 +8,8 @@ spec:
     replicas: 1
     template:
       spec:
-        parallelism: 2000
-        completions: 2000
+        parallelism: 3
+        completions: 3
         backoffLimit: 0
         template:
           spec:
@@ -36,6 +36,6 @@ spec:
                 - bash
                 - -xc
                 - |
-                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/restart_handler.py > restart_handler.py
+                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/pubsub/restart_handler.py > restart_handler.py
                   python3 -m pip install kubernetes redis
                   python3 restart_handler.py

@@ -112,7 +112,7 @@ class RestartHandler:
             logger.debug("Releasing lock.")
             self.release_lock()
 
-    async def signal_handler(self):
+    def signal_handler(self):
         while True:
             sender: str = self.redis_pubsub.get_message()
             logger.debug(f"Received restart signal from {sender}, restarting main process (PID: {self.main_process.pid})")
@@ -120,7 +120,7 @@ class RestartHandler:
             self.start_main_process()
             logger.debug("Successfully restarted main process")
 
-async def main(namespace: str):
+def main(namespace: str):
     try: 
         # for in cluster testing
         config.load_incluster_config()
@@ -150,8 +150,8 @@ async def main(namespace: str):
             if main_process.returncode == 0:
                 break
 
-            await restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
-            main_process = restart_handler.start_main_process()         # restart main process
+            restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
+            main_process = restart_handler.start_main_process()   # restart main process
 
         time.sleep(1)  # sleep to avoid excessive polling
 

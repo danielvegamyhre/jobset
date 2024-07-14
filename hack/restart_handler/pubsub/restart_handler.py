@@ -106,8 +106,8 @@ class RestartHandler:
         """Attemp to acquire a lock and concurrently publish restart signal to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
-        self.redis_client.publish(self.restarts_channel, self.pod_name)
-        logger.debug("Finished broadcasting restart signal")
+        num_receivers = self.redis_client.publish(self.restarts_channel, self.pod_name)
+        logger.debug("Finished broadcasting restart signal. Message received by {num_receivers} subscribers.")
 
     def signal_handler(self):
         for message in self.redis_pubsub.listen():

@@ -106,13 +106,8 @@ class RestartHandler:
         """Attemp to acquire a lock and concurrently publish restart signal to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
-        if self.acquire_lock():
-            logger.debug("Acquired lock. Publishing restart signal")
-            self.redis_client.publish(self.restarts_channel, self.pod_name)
-            logger.debug("Finished broadcasting restart signal")
-            time.sleep(10)
-            logger.debug("Releasing lock.")
-            self.release_lock()
+        self.redis_client.publish(self.restarts_channel, self.pod_name)
+        logger.debug("Finished broadcasting restart signal")
 
     def signal_handler(self):
         for message in self.redis_pubsub.listen():
@@ -126,19 +121,7 @@ class RestartHandler:
                 logger.debug("not a restart signal")
 
     def _is_restart_signal(self, msg: dict) -> bool:
-        # filter non-messages
-        is_msg = msg.get("type", "") == "message"
-        if not is_msg:
-            logger.debug("not message")
-            return False
-        # filter data which is not of type bytes (expected signal is in format b'{podname}')
-        data = msg.get("data", "")
-        if not isinstance(data, bytes):
-            logger.debug("not bytes")
-            return False
-        # filter msgs from self
-        from_self = data.decode() == self.pod_name
-        return not from_self
+        return msg.get["type"] == "message" and not msg["data"].decode() == self.pod_name
 
 
 def main(namespace: str):
@@ -166,9 +149,15 @@ def main(namespace: str):
             logger.debug(f"Main command exited with code: {main_process.returncode}")
             if main_process.returncode == 0:
                 break
+            if restart_handler.acquire_lock():
+                restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
+                main_process = restart_handler.start_main_process()   # restart main process
 
-            restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
-            main_process = restart_handler.start_main_process()   # restart main process
+                # temporary hack: sleep to hold lock longer than necessary to prevent race condition
+                # where more than one pod broadcasts restart signal
+                time.sleep(10) 
+
+                restart_handler.release_lock()
 
         time.sleep(1)  # sleep to avoid excessive polling
 

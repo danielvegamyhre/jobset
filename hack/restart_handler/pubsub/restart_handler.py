@@ -124,7 +124,7 @@ class RestartHandler:
 
     def _is_restart_signal(self, msg: dict) -> bool:
         is_msg = msg.get("type", "") == 'message'
-        from_self = msg.get("data", "").decode() == self.pod_name
+        from_self = str(msg.get("data", "")).decode() == self.pod_name
         return is_msg and not from_self
 
 

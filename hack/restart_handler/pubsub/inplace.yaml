@@ -1,22 +1,36 @@
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
-  name: inplace6
+  name: pubsub3
 spec:
   replicatedJobs:
   - name: workers
-    replicas: 1
+    replicas: 6
     template:
       spec:
-        parallelism: 3
-        completions: 3
+        parallelism: 1000
+        completions: 1000
         backoffLimit: 0
         template:
           spec:
             restartPolicy: Never
+            volumes:
+            - name: shared-data
+              emptyDir: {}
+            initContainers:
+            - name: wrapper-init
+              image: gcr.io/gke-scalability-images/restart-handler:latest
+              volumeMounts:
+              - name: shared-data
+                mountPath: /data
+              command:
+              - bash
+              - -xc
+              - |
+                cp /app/restart_handler.py /data/restart_handler.py
             containers:
             - name: wrapper
-              image: python:3.10
+              image: gcr.io/gke-scalability-images/restart-handler:latest
               env:
               - name: USER_COMMAND
                 value: "sleep 1000"
@@ -32,10 +46,11 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.annotations['jobset.sigs.k8s.io/jobset-name']
+              volumeMounts:
+              - name: shared-data
+                mountPath: /data
               command: 
                 - bash
                 - -xc
                 - |
-                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/pubsub/restart_handler.py > restart_handler.py
-                  python3 -m pip install kubernetes redis
-                  python3 restart_handler.py
+                  python3 /data/restart_handler.py

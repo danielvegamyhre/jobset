@@ -7,7 +7,6 @@ import time
 import asyncio
 import time
 import logging
-import redis
 from datetime import datetime
 
 from kubernetes import client, config
@@ -40,16 +39,16 @@ logger.addHandler(console_handler)
 # constants
 WRAPPER_CONTAINER_NAME = "wrapper"
 POD_NAME_ENV = "POD_NAME"
-REDIS_HOST_ENV = "REDIS_HOST"
-REDIS_PORT_ENV = "REDIS_PORT"
 JOBSET_NAME_ENV = "JOBSET_NAME"
 USER_COMMAND_ENV = "USER_COMMAND"
 
 class RestartHandler:
-    def __init__(self):
+    def __init__(self, lease_name: str = None, lease_ttl_seconds: int = 10):
         self.main_process = None
-        self.redis_lock_name = self._get_lock_name()
-        self.redis_client = self._init_redis_client()
+        self.lease_name = "jobset-restart-lease"
+        self.pod_name = os.getenv(POD_NAME_ENV)
+        self.lease_name = lease_name or os.getenv(JOBSET_NAME_ENV)
+        self.lease_ttl_seconds = lease_ttl_seconds
 
     def _get_lock_name(self):
         # use jobset name as lock name
@@ -57,36 +56,36 @@ class RestartHandler:
         if not lock_name:
             raise ValueError(f"environment variables {JOBSET_NAME_ENV} must be set.")
         return lock_name
-
-    def _init_redis_client(self):
-        # get Redis service details from env vars
-        redis_host = os.environ.get(REDIS_HOST_ENV, None)
-        redis_port = os.environ.get(REDIS_PORT_ENV, None)
-        if not redis_host or not redis_port:
-            raise ValueError(f"environment variables {REDIS_HOST_ENV} and {REDIS_PORT_ENV} must both be set.")
-
-        # set up redis client
-        client = redis.Redis(host=redis_host, port=redis_port)
-        logger.debug(f"succesfully set up redis client: {client}")
-        return client
      
-    def acquire_lock(self) -> bool:
+    def acquire_lease(self) -> bool:
         """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if
         lock was successfully acquired or not (i.e., it is already held by another process)."""
-        success = self.redis_client.setnx(self.redis_lock_name, 1)
-        return success
+        lease = client.CoordinationV1Api().V1Lease(
+            metadata=client.V1ObjectMeta(
+                name=self.lease_name,
+                namespace="default"
+            ),
+            spec=client.V1LeaseSpec(
+                holder_identity=self.pod_name,
+                lease_duration_seconds=10,  # Duration of the lease in seconds
+                lease_transitions=0,
+            )
+        )
 
-    def release_lock(self):
-        """Release lock by deleting the lock key in Redis."""
-        self.redis_client.delete(self.redis_lock_name)
+        try:
+            self.client.CoordinationV1Api().create_namespaced_lease(namespace=self.namespace, body=lease)
+            logger.debug(f"{self.pod_name} acquired lease with {self.lease_ttl_seconds} TTL.")
+            return True
+        except client.rest.ApiException as e:
+            logger.debug(f"exception occured while acquiring lease: {e}")
+            return False
 
     def get_pod_names(self, namespace: str = "default") -> list[str]:
-        """Get all pods owned by the given JobSet, except the Redis pod and the
-        pod the handler is currently running in."""
+        """Get all pods owned by the given JobSet, except self."""
         self_pod_name = os.getenv(POD_NAME_ENV)
         pods = client.CoreV1Api().list_namespaced_pod(namespace)
-        # filter out self pod name and redis pod
-        return [pod.metadata.name for pod in pods.items if "redis" not in pod.metadata.name if pod.metadata.name != self_pod_name]
+        # filter out self pod name
+        return [pod.metadata.name for pod in pods.items if pod.metadata.name != self_pod_name]
 
     def handle_restart_signal(self, signum, frame):
         """Signal handler for SIGUSR1 (restart)."""
@@ -171,8 +170,8 @@ async def main(namespace: str):
             if main_process.returncode == 0:
                 break
 
-            # acquire lock
-            if not restart_handler.acquire_lock():
+            # acquire lease
+            if not restart_handler.acquire_lease():
                 return
     
             logger.debug("Main command failed. Broadcasting restart signal...")
@@ -184,9 +183,6 @@ async def main(namespace: str):
             restart_latency = time.perf_counter() - start
             logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
 
-            time.sleep(120)
-            restart_handler.release_lock()
-        
         await asyncio.sleep(1)  # sleep to avoid excessive polling
 
 if __name__ == "__main__":

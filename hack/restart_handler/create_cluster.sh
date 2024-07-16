@@ -1,5 +1,5 @@
 gcloud compute networks create scaletestnetwork \
-  --project=${project} \
+  --project=${PROJECT} \
   --subnet-mode=custom
 
 gcloud beta container clusters create \
@@ -14,7 +14,7 @@ gcloud beta container clusters create \
   --no-enable-master-authorized-networks \
   --quiet \
   --services-ipv4-cidr=/16 \
-  --project=${project} \
+  --project=${PROJECT} \
   --region=us-central1 \
   --network=scaletestnetwork \
   --num-nodes=666 \
@@ -26,20 +26,20 @@ gcloud beta container clusters create \
 
 gcloud compute firewall-rules create \
   scaletestcluster-us-central1 \
-  --project=${project} \
+  --project=${PROJECT} \
   --network=scaletestnetwork \
   --allow=tcp:22,tcp:80,tcp:8080,tcp:9090,tcp:30000-32767,udp:30000-32767,tcp:9091 \
-  --target-tags=gke-scaletestcluster-ed4e8f0a-node
+  --target-tags=gke-scaletestcluster-c389fc9e-node #https://screenshot.googleplex.com/33bCunJEqRDBYxi
 
 gcloud compute routers create \
   scaletestrouter \
-  --project=${project} \
+  --project=${PROJECT} \
   --network=scaletestnetwork \
   --region=us-central1
 
 gcloud compute routers nats create \
   scaletestnat \
-  --project=${project} \
+  --project=${PROJECT} \
   --router=scaletestrouter \
   --router-region=us-central1 \
   --auto-allocate-nat-external-ips \
@@ -49,7 +49,7 @@ gcloud compute routers nats create \
 gcloud beta container node-pools create \
   heapster-pool \
   --cluster=scaletestcluster \
-  --project=${project} \
+  --project=${PROJECT} \
   --region=us-central1 \
   --num-nodes=1 \
   --machine-type=n1-standard-64
@@ -57,7 +57,7 @@ gcloud beta container node-pools create \
 gcloud beta container node-pools create \
   pool1 \
   --cluster=scaletestcluster \
-  --project=${project} \
+  --project=${PROJECT} \
   --region=us-central1 \
   --num-nodes=666 \
   --disk-size=30GB \
@@ -66,7 +66,16 @@ gcloud beta container node-pools create \
 gcloud beta container node-pools create \
   pool2 \
   --cluster=scaletestcluster \
-  --project=${project} \
+  --project=${PROJECT} \
+  --region=us-central1 \
+  --num-nodes=666 \
+  --disk-size=30GB \
+  --machine-type=e2-medium
+
+  gcloud beta container node-pools create \
+  pool3 \
+  --cluster=scaletestcluster \
+  --project=${PROJECT} \
   --region=us-central1 \
   --num-nodes=666 \
   --disk-size=30GB \

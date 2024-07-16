@@ -66,10 +66,10 @@ class RestartHandler:
         self.restarts_channel = restarts_channel
         self.redis_client = self._init_redis_client()
         self.redis_pubsub = self.redis_client.pubsub()
-        self.redis_pubsub.subscribe(restarts_channel)
         self.pod_name = os.getenv(POD_NAME_ENV)
         self.redis_lock_name = lock_name or os.getenv(JOBSET_NAME_ENV)
         self.redis_lock_ttl = lock_ttl_seconds
+        self._subscribe_to_restart_channel()
 
     def _init_redis_client(self):
         # get Redis service details from env vars
@@ -84,6 +84,13 @@ class RestartHandler:
             raise 
         logger.debug(f"succesfully set up redis client: {client}")
         return client
+    
+    def _subscribe_and_confirm(self) -> bool:
+        """Subscribes to restarts pubsub channel and returns 'true' if successful.
+        Raises exception if we timeout trying to subscribe."""
+        self.redis_pubsub.subscribe(self.restarts_channel)
+        msg: dict = self.redis_pubsub.get_message(timeout=5.0)
+        return msg["type"] == "subscribe"
      
     def acquire_lock(self) -> bool:
         """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if
@@ -119,9 +126,10 @@ class RestartHandler:
         return main_process
 
     def broadcast_restart_signal(self, namespace: str = "default"):
-        """Attemp to acquire a lock and concurrently publish restart signal to all worker pods
+        """Attempt to acquire a lock and concurrently publish restart signal to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
+        logger.debug(f"Pod {self.pod_name} acquired lock. Broadcasting restart signal.")
         num_receivers = self.redis_client.publish(self.restarts_channel, self.pod_name)
         logger.debug(f"Finished broadcasting restart signal. Message received by {num_receivers} subscribers.")
 
@@ -137,6 +145,7 @@ class RestartHandler:
                 logger.debug("not a restart signal")
 
     def _is_restart_signal(self, msg: dict) -> bool:
+        # messages from self should return false
         return msg["type"] == "message" and not msg["data"].decode() == self.pod_name
 
 
@@ -168,12 +177,6 @@ def main(namespace: str):
             if restart_handler.acquire_lock():
                 restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
                 main_process = restart_handler.start_main_process()   # restart main process
-
-                # temporary hack: sleep to hold lock longer than necessary to prevent race condition
-                # where more than one pod broadcasts restart signal
-                time.sleep(10) 
-
-                restart_handler.release_lock()
 
         time.sleep(1)  # sleep to avoid excessive polling
 

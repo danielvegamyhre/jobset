@@ -69,7 +69,7 @@ class RestartHandler:
         self.pod_name = os.getenv(POD_NAME_ENV)
         self.redis_lock_name = lock_name or os.getenv(JOBSET_NAME_ENV)
         self.redis_lock_ttl = lock_ttl_seconds
-        self._subscribe_to_restart_channel()
+        self._subscribe_and_confirm()
 
     def _init_redis_client(self):
         # get Redis service details from env vars
@@ -90,7 +90,8 @@ class RestartHandler:
         Raises exception if we timeout trying to subscribe."""
         self.redis_pubsub.subscribe(self.restarts_channel)
         msg: dict = self.redis_pubsub.get_message(timeout=5.0)
-        return msg["type"] == "subscribe"
+        if not msg["type"] == "subscribe":
+            raise Exception(f"failed to subscribe to channel: {self.restarts_channel}")
      
     def acquire_lock(self) -> bool:
         """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if

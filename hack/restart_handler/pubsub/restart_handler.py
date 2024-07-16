@@ -38,7 +38,6 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 # constants
-WRAPPER_CONTAINER_NAME = "wrapper"
 POD_NAME_ENV = "POD_NAME"
 REDIS_HOST_ENV = "REDIS_HOST"
 REDIS_PORT_ENV = "REDIS_PORT"
@@ -46,21 +45,31 @@ JOBSET_NAME_ENV = "JOBSET_NAME"
 USER_COMMAND_ENV = "USER_COMMAND"
 
 class RestartHandler:
-    def __init__(self, restarts_channel: str = "restarts"):
+    def __init__(self, restarts_channel: str = "restarts", lock_name: str = None, lock_ttl_seconds: int = 10):
+        """RestartHandler is a wrapper process which executes the command defined in $USER_COMMAND
+        environment variable as a child process. It is meant to be ran in a k8s pod, injected by
+        JobSet as a wrapper around the user defined main container process.
+
+        The RestartHandler will monitor the process until
+        it exits. If it exits with a non-zero exit code, it will broadcast a "restart signal" to
+        all other RestartHandlers in the JobSet via Redis PubSub. RestartHanders subscribe to a
+        restart channel, and delete + recreate the child process when a restart signal is received.
+
+        :restarts_channel: name of Redis pubsub channel to broadcast restart signal on.
+        :lock_name: name of Redis key to use as a lock.
+        :lock_ttl_seconds: length of TTL set on lock key, in seconds. This is used to ensure if the
+                           pod that acquired the lock dies before it can release the lock, the lock
+                           will automatically be released (deleted) after TTL seconds to ensure we
+                           don't deadlock.
+        """
         self.main_process = None
         self.restarts_channel = restarts_channel
-        self.redis_lock_name = self._get_lock_name()
         self.redis_client = self._init_redis_client()
         self.redis_pubsub = self.redis_client.pubsub()
         self.redis_pubsub.subscribe(restarts_channel)
         self.pod_name = os.getenv(POD_NAME_ENV)
-
-    def _get_lock_name(self):
-        # use jobset name as lock name
-        lock_name = os.getenv(JOBSET_NAME_ENV, None)
-        if not lock_name:
-            raise ValueError(f"environment variables {JOBSET_NAME_ENV} must be set.")
-        return lock_name
+        self.redis_lock_name = lock_name or os.getenv(JOBSET_NAME_ENV)
+        self.redis_lock_ttl = lock_ttl_seconds
 
     def _init_redis_client(self):
         # get Redis service details from env vars
@@ -71,13 +80,20 @@ class RestartHandler:
 
         # set up redis client
         client = redis.Redis(host=redis_host, port=redis_port)
+        if not client.ping():
+            raise 
         logger.debug(f"succesfully set up redis client: {client}")
         return client
      
     def acquire_lock(self) -> bool:
         """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if
         lock was successfully acquired or not (i.e., it is already held by another process)."""
-        success = self.redis_client.setnx(self.redis_lock_name, 1)
+        with self.redis_client.pipeline() as pipe:
+            pipe.multi()       # Start the transaction
+            pipe.setnx(self.redis_lock_name, 1)   
+            pipe.expire(self.redis_lock_name, self.redis_lock_ttl) 
+            result = pipe.execute()
+        success: bool = result[0]        
         return success
 
     def release_lock(self):

@@ -1,15 +1,15 @@
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
-  name: pubsub3
+  name: exec
 spec:
   replicatedJobs:
   - name: workers
     replicas: 6
     template:
       spec:
-        parallelism: 1000
-        completions: 1000
+        parallelism: 1
+        completions: 1
         backoffLimit: 0
         template:
           spec:
@@ -19,7 +19,7 @@ spec:
               emptyDir: {}
             initContainers:
             - name: wrapper-init
-              image: gcr.io/gke-scalability-images/restart-handler:latest
+              image: gcr.io/gke-scalability-images/restart-handler-exec:latest
               volumeMounts:
               - name: shared-data
                 mountPath: /data
@@ -30,7 +30,7 @@ spec:
                 cp /app/restart_handler.py /data/restart_handler.py
             containers:
             - name: wrapper
-              image: gcr.io/gke-scalability-images/restart-handler:latest
+              image: gcr.io/gke-scalability-images/restart-handler-exec:latest
               env:
               - name: USER_COMMAND
                 value: "sleep 1000"

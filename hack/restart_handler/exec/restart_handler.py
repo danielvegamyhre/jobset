@@ -7,7 +7,7 @@ import time
 import asyncio
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from kubernetes import client, config
 from kubernetes.client import Configuration
@@ -43,12 +43,14 @@ JOBSET_NAME_ENV = "JOBSET_NAME"
 USER_COMMAND_ENV = "USER_COMMAND"
 
 class RestartHandler:
-    def __init__(self, lease_name: str = None, lease_ttl_seconds: int = 10):
+    def __init__(self, lease_name: str = "jobset-restart-lease", lease_ttl_seconds: int = 10, namespace: str = "default"):
         self.main_process = None
-        self.lease_name = "jobset-restart-lease"
+        self.lease_name = lease_name
         self.pod_name = os.getenv(POD_NAME_ENV)
         self.lease_name = lease_name or os.getenv(JOBSET_NAME_ENV)
         self.lease_ttl_seconds = lease_ttl_seconds
+        self.namespace = namespace
+        self.lease = self._create_lease()
 
     def _get_lock_name(self):
         # use jobset name as lock name
@@ -56,25 +58,47 @@ class RestartHandler:
         if not lock_name:
             raise ValueError(f"environment variables {JOBSET_NAME_ENV} must be set.")
         return lock_name
-     
-    def acquire_lease(self) -> bool:
-        """Attempts to acquire distributed lock for the JobSet. Returns boolean value indicating if
-        lock was successfully acquired or not (i.e., it is already held by another process)."""
-        lease = client.CoordinationV1Api().V1Lease(
+
+    def _create_lease(self) -> client.models.v1_lease.V1Lease:
+        """Attempts to create lease and"""
+        lease = client.V1Lease(
             metadata=client.V1ObjectMeta(
                 name=self.lease_name,
                 namespace="default"
             ),
             spec=client.V1LeaseSpec(
                 holder_identity=self.pod_name,
-                lease_duration_seconds=10,  # Duration of the lease in seconds
+                # acquired_time=datetime.now(timezone.utc).isoformat(),
+                lease_duration_seconds=self.lease_ttl_seconds,  # Duration of the lease in seconds
                 lease_transitions=0,
             )
         )
-
         try:
-            self.client.CoordinationV1Api().create_namespaced_lease(namespace=self.namespace, body=lease)
-            logger.debug(f"{self.pod_name} acquired lease with {self.lease_ttl_seconds} TTL.")
+            lease = client.CoordinationV1Api().create_namespaced_lease(namespace=self.namespace, body=lease)
+            logger.debug(f"{self.pod_name} created lease with {self.lease_ttl_seconds} TTL.")
+            return lease
+        except client.rest.ApiException as e:
+            if e.status == 409: # 409 is a conflict, lease already exists
+                lease = client.CoordinationV1Api().read_namespaced_lease(name=self.lease_name, namespace=self.namespace)
+                logger.debug(f"fetched lease from apiserver")
+                return lease
+            logger.debug(f"exception occured while acquiring lease: {e}")
+            raise e
+
+    def acquire_lease(self) -> bool:
+        """Attempts to acquire restart lease for the JobSet. Returns boolean value indicating if
+        lock was successfully acquired or not (i.e., it is already held by another process)."""
+        try:
+            lease = client.CoordinationV1Api().read_namespaced_lease(name=self.lease_name, namespace=self.namespace)
+        except client.rest.ApiException as e:
+            logging.debug(f"error fetching lease before acquiring it")
+            raise e
+        try:
+            lease.holder_identity = self.pod_name
+            lease.lease_duration_seconds = self.lease_ttl_seconds
+            lease = client.CoordinationV1Api().replace_namespaced_lease(name=self.lease_name, namespace=self.namespace, body=lease)
+            # if successful, persist lease locally for next time
+            self.lease = lease
             return True
         except client.rest.ApiException as e:
             logger.debug(f"exception occured while acquiring lease: {e}")
@@ -108,8 +132,6 @@ class RestartHandler:
         """Attemp to acquire a lock and concurrently broadcast restart signals to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
-        logger.debug(f"pod {os.getenv(POD_NAME_ENV)} acquired lock")
-
         # create coroutines
         tasks = [
             asyncio.create_task(self.exec_restart_command(pod_name, namespace))
@@ -123,7 +145,6 @@ class RestartHandler:
             else:
                 logger.debug(f"") 
         logger.debug("Finished broadcasting restart signal")
-        logger.debug(f"pod {os.getenv(POD_NAME_ENV)} released lock")
 
     async def exec_restart_command(self, pod_name: str, namespace: str = "default"):
         """Asynchronously use kubectl-exec to send a SIGUSR1 signal to PID 1 (wrapper process)

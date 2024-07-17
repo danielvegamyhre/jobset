@@ -98,6 +98,7 @@ class RestartHandler:
             lease.lease_duration_seconds = self.lease_ttl_seconds
             lease = client.CoordinationV1Api().replace_namespaced_lease(name=self.lease_name, namespace=self.namespace, body=lease)
             # if successful, persist lease locally for next time
+            logger.debug(f"acquired lease")
             self.lease = lease
             return True
         except client.rest.ApiException as e:

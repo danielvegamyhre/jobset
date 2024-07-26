@@ -12,15 +12,26 @@ spec:
     replicas: 3 # set to number of node pools
     template:
       spec:
-        parallelism: 3
-        completions: 3
-        backoffLimit: 10
+        parallelism: 1998
+        completions: 1998
+        backoffLimit: 0
         template:
           spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: cloud.google.com/gke-nodepool
+                      operator: NotIn
+                      values:
+                      - heapster-pool
             containers:
             - name: sleep
-              image: busybox
+              image: bash:latest
               command: 
-                - sleep
-              args:
-                - 1000s
+                - bash
+                - -xc
+                - |
+                  echo "starting up"
+                  sleep 1000

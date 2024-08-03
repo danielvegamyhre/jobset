@@ -208,7 +208,7 @@ class RestartHandler:
                     start = time.perf_counter()
 
                     await self.broadcast_restart_signal(self.namespace) # broadcast restart signal
-                    self.start_main_process()                           # restart main process
+                    self.start_main_process()                           # restart local user process
 
                     restart_latency = time.perf_counter() - start
                     logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")

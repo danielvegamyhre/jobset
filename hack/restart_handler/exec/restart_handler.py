@@ -165,8 +165,6 @@ class RestartHandler:
         for result in results:
             if isinstance(result, Exception):
                 logger.debug(f"Failed to broadcast signal to pod: {result}")
-            else:
-                logger.debug(f"") 
         logger.debug("Finished broadcasting restart signal")
 
     async def exec_restart_command(self, pod_name: str, namespace: str = "default"):

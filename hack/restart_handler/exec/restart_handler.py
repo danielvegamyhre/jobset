@@ -7,7 +7,7 @@ import time
 import asyncio
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from kubernetes import client, config
 from kubernetes.client import Configuration
@@ -50,7 +50,7 @@ class RestartHandler:
         self.lease_name = lease_name or os.getenv(JOBSET_NAME_ENV)
         self.lease_ttl_seconds = lease_ttl_seconds
         self.namespace = namespace
-        self.lease = self._create_lease()
+        self.lease = self._create_or_fetch_lease()
 
     def _get_lock_name(self):
         # use jobset name as lock name
@@ -59,12 +59,12 @@ class RestartHandler:
             raise ValueError(f"environment variables {JOBSET_NAME_ENV} must be set.")
         return lock_name
 
-    def _create_lease(self) -> client.models.v1_lease.V1Lease:
-        """Attempts to create lease and"""
+    def _create_or_fetch_lease(self) -> client.models.v1_lease.V1Lease:
+        """Create lease and return it, or fetch it if it already exists."""
         lease = client.V1Lease(
             metadata=client.V1ObjectMeta(
                 name=self.lease_name,
-                namespace="default"
+                namespace=self.namespace,
             ),
             spec=client.V1LeaseSpec(
                 holder_identity=self.pod_name,
@@ -91,19 +91,27 @@ class RestartHandler:
         try:
             lease = client.CoordinationV1Api().read_namespaced_lease(name=self.lease_name, namespace=self.namespace)
         except client.rest.ApiException as e:
-            logging.debug(f"error fetching lease before acquiring it")
+            print(f"error fetching lease before acquiring it")
             raise e
-        try:
-            lease.holder_identity = self.pod_name
-            lease.lease_duration_seconds = self.lease_ttl_seconds
-            lease = client.CoordinationV1Api().replace_namespaced_lease(name=self.lease_name, namespace=self.namespace, body=lease)
-            # if successful, persist lease locally for next time
-            logger.debug(f"acquired lease")
-            self.lease = lease
-            return True
-        except client.rest.ApiException as e:
-            logger.debug(f"exception occured while acquiring lease: {e}")
+        
+        # we can acquire the lease if we already hold it or it has expired
+        if lease.spec.holder_identity == self.pod_name or self.lease_has_expired(lease):
+            try:
+                lease.spec.holder_identity = self.pod_name
+                lease.spec.renew_time = datetime.now(timezone.utc).isoformat()
+                lease = client.CoordinationV1Api().replace_namespaced_lease(name=self.lease_name, namespace=self.namespace, body=lease)
+                # if successful, persist lease locally for next time
+                print(f"{self.pod_name} acquired lease: {lease}")
+                return True
+            except client.rest.ApiException as e:
+                print(f"exception occured while acquiring lease: {e}")
+                raise e
+        else:
+            print(f"lease still held by another pod {lease.spec.holder_identity}")
             return False
+        
+    def _lease_has_expired(self, lease: client.models.v1_lease.V1Lease) -> bool:
+        return lease.spec.renew_time + timedelta(seconds=lease.spec.lease_duration_seconds) < datetime.now(lease.spec.renew_time.tzinfo)
 
     def get_pod_names(self, namespace: str = "default") -> list[str]:
         """Get all pods owned by the given JobSet, except self."""
@@ -115,13 +123,12 @@ class RestartHandler:
     def handle_restart_signal(self, signum, frame):
         """Signal handler for SIGUSR1 (restart)."""
         logger.debug("Restart signal received. Restarting main process...")
-        os.kill(main_process.pid, signal.SIGKILL)
+        os.kill(self.main_process.pid, signal.SIGKILL)
         self.start_main_process()
         logger.debug("Successfully restarted main process")
 
     def start_main_process(self):
         """Starts the main command and returns the Popen object."""
-        global main_process
         main_command = os.getenv(USER_COMMAND_ENV, None)
         if not main_command:
             raise ValueError(f"environment variable {USER_COMMAND_ENV} must be set.")

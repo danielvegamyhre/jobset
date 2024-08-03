@@ -8,8 +8,8 @@ spec:
     replicas: 1
     template:
       spec:
-        parallelism: 1000
-        completions: 1000
+        parallelism: 3
+        completions: 3
         backoffLimit: 0
         template:
           spec:
@@ -17,17 +17,17 @@ spec:
             volumes:
             - name: shared-data
               emptyDir: {}
-            # initContainers:
-            # - name: wrapper-init
-            #   image: gcr.io/gke-scalability-images/restart-handler-exec:latest
-            #   volumeMounts:
-            #   - name: shared-data
-            #     mountPath: /data
-            #   command:
-            #   - bash
-            #   - -xc
-            #   - |
-            #     cp /app/restart_handler.py /data/restart_handler.py
+            initContainers:
+            - name: wrapper-init
+              image: gcr.io/gke-scalability-images/restart-handler-exec:latest
+              volumeMounts:
+              - name: shared-data
+                mountPath: /data
+              command:
+              - bash
+              - -xc
+              - |
+                cp /app/restart_handler.py /data/restart_handler.py
             containers:
             - name: wrapper
               image: gcr.io/gke-scalability-images/restart-handler-exec:latest
@@ -49,14 +49,14 @@ spec:
               volumeMounts:
               - name: shared-data
                 mountPath: /data
-              command: 
-                - bash
-                - -xc
-                - |
-                  curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/exec/restart_handler.py > restart_handler.py
-                  python3 restart_handler.py
               # command: 
               #   - bash
               #   - -xc
               #   - |
-              #     python3 /data/restart_handler.py
+              #     curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/exec/restart_handler.py > restart_handler.py
+              #     python3 restart_handler.py
+              command: 
+                - bash
+                - -xc
+                - |
+                  python3 /data/restart_handler.py

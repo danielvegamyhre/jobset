@@ -95,7 +95,7 @@ class RestartHandler:
             raise e
         
         # we can acquire the lease if we already hold it or it has expired
-        if lease.spec.holder_identity == self.pod_name or self.lease_has_expired(lease):
+        if lease.spec.holder_identity == self.pod_name or self._lease_has_expired(lease):
             try:
                 lease.spec.holder_identity = self.pod_name
                 lease.spec.renew_time = datetime.now(timezone.utc).isoformat()

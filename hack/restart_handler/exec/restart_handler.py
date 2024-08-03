@@ -68,7 +68,8 @@ class RestartHandler:
             ),
             spec=client.V1LeaseSpec(
                 holder_identity=self.pod_name,
-                # acquired_time=datetime.now(timezone.utc).isoformat(),
+                acquire_time=datetime.now(timezone.utc).isoformat(),
+                renew_time_=datetime.now(timezone.utc).isoformat(),
                 lease_duration_seconds=self.lease_ttl_seconds,  # Duration of the lease in seconds
                 lease_transitions=0,
             )

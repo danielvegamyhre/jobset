@@ -52,6 +52,10 @@ class RestartHandler:
         self.namespace = namespace
         self.lease = self._create_or_fetch_lease()
 
+        # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process
+        # that it must restart the main process.
+        signal.signal(signal.SIGUSR1, self.handle_restart_signal)
+
     def _get_lock_name(self):
         # use jobset name as lock name
         lock_name = os.getenv(JOBSET_NAME_ENV, None)
@@ -127,17 +131,25 @@ class RestartHandler:
         # kill existing user process
         os.kill(self.main_process.pid, signal.SIGKILL)
         # create new user process and store it for tracking
-        self.main_process = self.start_main_process()
+        self.start_main_process()
         logger.debug("Successfully restarted main process")
 
-    def start_main_process(self):
-        """Starts the main command and returns the Popen object."""
+    def start_main_process(self) -> None:
+        """Starts the main command as a subprocess, and stores the Popen object for tracking."""
         main_command = os.getenv(USER_COMMAND_ENV, None)
         if not main_command:
             raise ValueError(f"environment variable {USER_COMMAND_ENV} must be set.")
+        # kill existing user process if necessary
+        if self.main_process is not None:
+            logger.debug(f"Killing existing user process PID: {self.main_process.pid}")
+            try:
+                os.kill(self.main_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                logger.debug(f"process PID {self.main_process.pid} does not exist")
+                pass
+
         logger.debug(f"Running main command: {main_command}")
-        main_process = subprocess.Popen(main_command, shell=True)
-        return main_process
+        self.main_process = subprocess.Popen(main_command, shell=True)
 
     async def broadcast_restart_signal(self, namespace: str = "default"):
         """Attemp to acquire a lock and concurrently broadcast restart signals to all worker pods
@@ -175,6 +187,33 @@ class RestartHandler:
                         command=exec_command,
                         stderr=True, stdin=False,
                         stdout=True, tty=False)
+        
+    async def run(self) -> None:
+        '''Launch the user process and run monitoring loop.'''
+        # launch user process
+        self.start_main_process()
+
+        # run monitoring loop
+        while True:
+            self.main_process.poll()
+            if self.main_process.returncode is not None:  # Check if process has finished
+                logger.debug(f"Main command exited with code: {self.main_process.returncode}")
+                if self.main_process.returncode == 0:
+                    break
+
+                # attempt to acquire lease. if we successfully acquire it, broadcast restart signal.
+                # otherwise, do nothing.
+                if self.acquire_lease():
+                    logger.debug("Main command failed. Broadcasting restart signal...")
+                    start = time.perf_counter()
+
+                    await self.broadcast_restart_signal(self.namespace) # broadcast restart signal
+                    self.start_main_process()                           # restart main process
+
+                    restart_latency = time.perf_counter() - start
+                    logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
+
+            await asyncio.sleep(1)  # sleep to avoid excessive polling
 
 async def main(namespace: str):
     try: 
@@ -184,38 +223,10 @@ async def main(namespace: str):
         # for local testing
         config.load_kube_config()
 
-    # set up restart handler
-    restart_handler = RestartHandler()
+    # start the restart handler
+    restart_handler = RestartHandler(namespace=namespace)
+    await restart_handler.run()
 
-    # setup signal handler for SIGUSR1, which the sidecar will use to signal this wrapper process
-    # that it must restart the main process.
-    signal.signal(signal.SIGUSR1, restart_handler.handle_restart_signal)
-
-    # start the main process
-    main_process = restart_handler.start_main_process()
-
-    # monitor the main process
-    while True:
-        main_process.poll()
-        if main_process.returncode is not None:  # Check if process has finished
-            logger.debug(f"Main command exited with code: {main_process.returncode}")
-            if main_process.returncode == 0:
-                break
-
-            # acquire lease
-            if not restart_handler.acquire_lease():
-                return
-    
-            logger.debug("Main command failed. Broadcasting restart signal...")
-            start = time.perf_counter()
-
-            await restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
-            main_process = restart_handler.start_main_process()         # restart main process
-
-            restart_latency = time.perf_counter() - start
-            logger.debug(f"Broadcast complete. Duration: {restart_latency} seconds")
-
-        await asyncio.sleep(1)  # sleep to avoid excessive polling
 
 if __name__ == "__main__":
     asyncio.run(main("default"))

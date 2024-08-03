@@ -124,8 +124,10 @@ class RestartHandler:
     def handle_restart_signal(self, signum, frame):
         """Signal handler for SIGUSR1 (restart)."""
         logger.debug("Restart signal received. Restarting main process...")
+        # kill existing user process
         os.kill(self.main_process.pid, signal.SIGKILL)
-        self.start_main_process()
+        # create new user process and store it for tracking
+        self.main_process = self.start_main_process()
         logger.debug("Successfully restarted main process")
 
     def start_main_process(self):

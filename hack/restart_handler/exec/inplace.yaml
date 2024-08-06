@@ -1,15 +1,15 @@
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
-  name: exec
+  name: exec10k3
 spec:
   replicatedJobs:
   - name: workers
-    replicas: 1
+    replicas: 5
     template:
       spec:
-        parallelism: 3
-        completions: 3
+        parallelism: 2000
+        completions: 2000
         backoffLimit: 0
         template:
           spec:
@@ -20,6 +20,7 @@ spec:
             initContainers:
             - name: wrapper-init
               image: gcr.io/gke-scalability-images/restart-handler-exec:latest
+              imagePullPolicy: Always
               volumeMounts:
               - name: shared-data
                 mountPath: /data

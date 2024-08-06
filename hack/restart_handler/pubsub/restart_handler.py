@@ -8,13 +8,6 @@ import time
 import logging
 import redis
 import threading
-from datetime import datetime
-
-from kubernetes import client, config
-from kubernetes.client import Configuration
-from kubernetes.client.api import core_v1_api
-from kubernetes.client.rest import ApiException
-from kubernetes.stream import stream
 
 # Create a logger
 logger = logging.getLogger(__name__)
@@ -45,7 +38,7 @@ JOBSET_NAME_ENV = "JOBSET_NAME"
 USER_COMMAND_ENV = "USER_COMMAND"
 
 class RestartHandler:
-    def __init__(self, restarts_channel: str = "restarts", lock_name: str = None, lock_ttl_seconds: int = 10):
+    def __init__(self, restarts_channel: str = "restarts", lock_name: str = None, lock_ttl_seconds: int = 10) -> None:
         """RestartHandler is a wrapper process which executes the command defined in $USER_COMMAND
         environment variable as a child process. It is meant to be ran in a k8s pod, injected by
         JobSet as a wrapper around the user defined main container process.
@@ -71,7 +64,7 @@ class RestartHandler:
         self.redis_lock_ttl = lock_ttl_seconds
         self._subscribe_and_confirm()
 
-    def _init_redis_client(self):
+    def _init_redis_client(self) -> None:
         # get Redis service details from env vars
         redis_host = os.environ.get(REDIS_HOST_ENV, None)
         redis_port = os.environ.get(REDIS_PORT_ENV, None)
@@ -90,7 +83,7 @@ class RestartHandler:
         Raises exception if we timeout trying to subscribe."""
         self.redis_pubsub.subscribe(self.restarts_channel)
         msg: dict = self.redis_pubsub.get_message(timeout=5.0)
-        if not msg["type"] == "subscribe":
+        if msg["type"] != "subscribe":
             raise Exception(f"failed to subscribe to channel: {self.restarts_channel}")
      
     def acquire_lock(self) -> bool:
@@ -104,29 +97,19 @@ class RestartHandler:
         success: bool = result[0]        
         return success
 
-    def release_lock(self):
+    def release_lock(self) -> None:
         """Release lock by deleting the lock key in Redis."""
         self.redis_client.delete(self.redis_lock_name)
 
-    def get_pod_names(self, namespace: str = "default") -> list[str]:
-        """Get all pods owned by the given JobSet, except the Redis pod and the
-        pod the handler is currently running in."""
-        pods = client.CoreV1Api().list_namespaced_pod(namespace)
-        # filter out self pod name and redis pod
-        return [pod.metadata.name for pod in pods.items if "redis" not in pod.metadata.name if pod.metadata.name != self.pod_name]
-
-    def start_main_process(self):
+    def start_main_process(self) -> None:
         """Starts the main command and returns the Popen object."""
-        global main_process
         main_command = os.getenv(USER_COMMAND_ENV, None)
         if not main_command:
             raise ValueError(f"environment variable {USER_COMMAND_ENV} must be set.")
         logger.debug(f"Running main command: {main_command}")
-        main_process = subprocess.Popen(main_command, shell=True)
-        self.main_process = main_process
-        return main_process
+        self.main_process = subprocess.Popen(main_command, shell=True) # store open Popen object to monitor
 
-    def broadcast_restart_signal(self, namespace: str = "default"):
+    def broadcast_restart_signal(self) -> None:
         """Attempt to acquire a lock and concurrently publish restart signal to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
@@ -134,7 +117,7 @@ class RestartHandler:
         num_receivers = self.redis_client.publish(self.restarts_channel, self.pod_name)
         logger.debug(f"Finished broadcasting restart signal. Message received by {num_receivers} subscribers.")
 
-    def signal_handler(self):
+    def signal_handler(self) -> None:
         for message in self.redis_pubsub.listen():
             logger.debug(f"received message: {message}")
             if self._is_restart_signal(message):
@@ -149,37 +132,32 @@ class RestartHandler:
         # messages from self should return false
         return msg["type"] == "message" and not msg["data"].decode() == self.pod_name
 
+    def run(self) -> None:
+        # start main process
+        self.start_main_process()
 
-def main(namespace: str):
-    try: 
-        # for in cluster testing
-        config.load_incluster_config()
-    except:
-        # for local testing
-        config.load_kube_config()
+        # run subscriber / signal handler in a separate thread
+        t = threading.Thread(target=self.signal_handler)
+        t.start()
 
+        # monitor the main process
+        while True:
+            self.main_process.poll()
+            if self.main_process.returncode is not None:  # Check if process has finished
+                logger.debug(f"Main command exited with code: {self.main_process.returncode}")
+                if self.main_process.returncode == 0:
+                    logger.debug("Main process completed successfully with exit code 0.")
+                    break
+                if self.acquire_lock():
+                    self.broadcast_restart_signal()     # broadcast restart signal
+                    self.start_main_process()           # restart main process
+            time.sleep(1)  # sleep to avoid excessive polling
+
+
+def main():
     # set up restart handler
     restart_handler = RestartHandler()
-
-    # start the main process
-    main_process = restart_handler.start_main_process()
-
-    # start subscriber / signal handler
-    t = threading.Thread(target=restart_handler.signal_handler)
-    t.start()
-
-    # monitor the main process
-    while True:
-        main_process.poll()
-        if main_process.returncode is not None:  # Check if process has finished
-            logger.debug(f"Main command exited with code: {main_process.returncode}")
-            if main_process.returncode == 0:
-                break
-            if restart_handler.acquire_lock():
-                restart_handler.broadcast_restart_signal(namespace)   # broadcast restart signal
-                main_process = restart_handler.start_main_process()   # restart main process
-
-        time.sleep(1)  # sleep to avoid excessive polling
+    restart_handler.run()
 
 if __name__ == "__main__":
-    main("default")
+    main()

@@ -24,17 +24,17 @@ file_handler = logging.FileHandler('restart_handler.log')  # Choose your log fil
 file_handler.setLevel(logging.DEBUG)  # Set the level for this handler
 
 # Create console handler (for writing to stdout)
-# console_handler = logging.StreamHandler(sys.stdout)  # Defaults to sys.stderr
-# console_handler.setLevel(logging.DEBUG)   # Set the level for this handler (e.g., only INFO and above)
+console_handler = logging.StreamHandler(sys.stdout)  # Defaults to sys.stderr
+console_handler.setLevel(logging.DEBUG)   # Set the level for this handler (e.g., only INFO and above)
 
 # Create formatter and add it to the handlers
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
-#console_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
 
 # Add the handlers to the logger
 logger.addHandler(file_handler)
-#logger.addHandler(console_handler)
+logger.addHandler(console_handler)
 
 # constants
 WRAPPER_CONTAINER_NAME = "wrapper"

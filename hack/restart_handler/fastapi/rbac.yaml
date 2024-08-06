@@ -1,0 +1,34 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exec-pod-role
+rules:
+  - verbs:
+      - list
+      - get
+    apiGroups:
+      - "*"
+    resources:
+      - pods
+      - pods/log
+  - verbs:
+      - "*"
+    apiGroups:
+      - "*"
+    resources:
+      - pods/exec
+  - verbs: ["create", "get", "list", "update", "patch"]
+    apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: exec-pod-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exec-pod-role
+subjects:
+  - kind: ServiceAccount
+    name: default

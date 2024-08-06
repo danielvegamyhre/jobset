@@ -1,0 +1,64 @@
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: fastapi1k2
+spec:
+  replicatedJobs:
+  - name: workers
+    replicas: 5
+    template:
+      spec:
+        parallelism: 200
+        completions: 200
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            volumes:
+            - name: shared-data
+              emptyDir: {}
+            initContainers:
+            - name: wrapper-init
+              image: gcr.io/gke-scalability-images/restart-handler-fastapi:latest
+              imagePullPolicy: Always
+              volumeMounts:
+              - name: shared-data
+                mountPath: /data
+              command:
+              - bash
+              - -xc
+              - |
+                cp /app/restart_handler.py /data/restart_handler.py
+            containers:
+            - name: wrapper
+              image: gcr.io/gke-scalability-images/restart-handler-fastapi:latest
+              imagePullPolicy: Always
+              env:
+              - name: USER_COMMAND
+                value: "sleep 1000"
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              - name: REDIS_HOST
+                value: redis-headless # from redis.yaml
+              - name: REDIS_PORT
+                value: "6379"
+              - name: JOBSET_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['jobset.sigs.k8s.io/jobset-name']
+              volumeMounts:
+              - name: shared-data
+                mountPath: /data
+              # command: 
+              #   - bash
+              #   - -xc
+              #   - |
+              #     curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/exec/restart_handler.py > restart_handler.py
+              #     python3 restart_handler.py
+              command: 
+                - bash
+                - -xc
+                - |
+                  python3 /data/restart_handler.py

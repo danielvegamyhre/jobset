@@ -21,7 +21,7 @@ gcloud beta container clusters create \
   --machine-type=e2-medium \
   --disk-size=30GB \
   --node-locations=us-central1-a,us-central1-c,us-central1-f \
-  --cluster-version=1.29.2-gke.1521000 \
+  --cluster-version=1.29.2-gke.1521000 \ 
   scaletestcluster
 
 gcloud compute firewall-rules create \
@@ -29,7 +29,7 @@ gcloud compute firewall-rules create \
   --project=${PROJECT} \
   --network=scaletestnetwork \
   --allow=tcp:22,tcp:80,tcp:8080,tcp:9090,tcp:30000-32767,udp:30000-32767,tcp:9091 \
-  --target-tags=gke-scaletestcluster-c389fc9e-node #https://screenshot.googleplex.com/33bCunJEqRDBYxi
+  --target-tags=gke-scaletestcluster-7de2da2b-node #https://screenshot.googleplex.com/33bCunJEqRDBYxi
 
 gcloud compute routers create \
   scaletestrouter \

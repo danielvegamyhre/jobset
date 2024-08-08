@@ -53,96 +53,17 @@ class RestartHandler:
     class RestartMessage(BaseModel):
         sender_pod_name: str
 
-    def __init__(self, lease_name: str = "jobset-restart-lease", lease_ttl_seconds: int = 60, namespace: str = "default", max_concurrency: int = 100):
+    def __init__(self, namespace: str = "default", max_concurrency: int = 100):
         self.main_process = None
-        self.lease_name = lease_name
         self.pod_name = os.getenv(POD_NAME_ENV)
         self.jobset_name = os.getenv(JOBSET_NAME_ENV)
-        self.lease_name = lease_name or os.getenv(JOBSET_NAME_ENV)
-        self.lease_ttl_seconds = lease_ttl_seconds
         self.namespace = namespace
-        self.lease = self._create_or_fetch_lease()
         self.async_client = httpx.AsyncClient()
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.app = FastAPI()
         self.router = APIRouter()
         self.router.add_api_route("/restart", self.restart_endpoint, methods=["POST"])
         self.app.include_router(self.router)
-
-    async def restart_endpoint(self, msg: RestartMessage):
-        msg_dict = msg.dict()
-        logger.debug(f"received restart signal from pod: {msg_dict['sender_pod_name']}")
-
-        # kill existing user process
-        os.kill(self.main_process.pid, signal.SIGUSR1)
-
-        # create new user process and store it for tracking
-        self.start_main_process()
-        logger.debug("Successfully restarted main process")
-
-        return Response(status_code=status.HTTP_200_OK) 
-
-    def _create_or_fetch_lease(self) -> client.models.v1_lease.V1Lease:
-        """Create lease and return it, or fetch it if it already exists."""
-        lease = client.V1Lease(
-            metadata=client.V1ObjectMeta(
-                name=self.lease_name,
-                namespace=self.namespace,
-            ),
-            spec=client.V1LeaseSpec(
-                holder_identity=self.pod_name,
-                acquire_time=datetime.now(timezone.utc).isoformat(),
-                renew_time=None,
-                lease_duration_seconds=self.lease_ttl_seconds,  # Duration of the lease in seconds
-                lease_transitions=0,
-            )
-        )
-        try:
-            lease = client.CoordinationV1Api().create_namespaced_lease(namespace=self.namespace, body=lease)
-            logger.debug(f"{self.pod_name} created lease with {self.lease_ttl_seconds} TTL.")
-            return lease
-        except client.rest.ApiException as e:
-            if e.status == 409: # 409 is a conflict, lease already exists
-                lease = client.CoordinationV1Api().read_namespaced_lease(name=self.lease_name, namespace=self.namespace)
-                logger.debug(f"fetched lease from apiserver")
-                return lease
-            logger.debug(f"exception occured while acquiring lease: {e}")
-            raise e
-
-    def acquire_lease(self) -> bool:
-        """Attempts to acquire restart lease for the JobSet. Returns boolean value indicating if
-        lock was successfully acquired or not (i.e., it is already held by another process)."""
-        try:
-            lease = client.CoordinationV1Api().read_namespaced_lease(name=self.lease_name, namespace=self.namespace)
-        except client.rest.ApiException as e:
-            print(f"error fetching lease before acquiring it")
-            raise e
-        
-        # we can acquire the lease if we already hold it or it has expired
-        if lease.spec.holder_identity == self.pod_name or self._lease_has_expired(lease):
-            try:
-                lease.spec.holder_identity = self.pod_name
-                lease.spec.renew_time = datetime.now(timezone.utc).isoformat()
-                lease = client.CoordinationV1Api().replace_namespaced_lease(name=self.lease_name, namespace=self.namespace, body=lease)
-                # if successful, persist lease locally for next time
-                print(f"{self.pod_name} acquired lease: {lease}")
-                return True
-            except client.rest.ApiException as e:
-                print(f"exception occured while acquiring lease: {e}")
-                raise e
-        else:
-            print(f"lease still held by another pod {lease.spec.holder_identity}")
-            return False
-        
-    def _lease_has_expired(self, lease: client.models.v1_lease.V1Lease) -> bool:
-        return lease.spec.renew_time is None or lease.spec.renew_time + timedelta(seconds=lease.spec.lease_duration_seconds) < datetime.now(lease.spec.renew_time.tzinfo)
-
-    def get_pod_hostnames(self, namespace: str = "default") -> list[str]:
-        """Get all pods owned by the given JobSet, except self."""
-        self_pod_name = os.getenv(POD_NAME_ENV)
-        pods = client.CoreV1Api().list_namespaced_pod(namespace)
-        # filter out self pod name
-        return [pod.spec.hostname for pod in pods.items if pod.metadata.name != self_pod_name]
     
     def start_main_process(self) -> None:
         """Starts the main command as a subprocess, and stores the Popen object for tracking."""
@@ -161,29 +82,62 @@ class RestartHandler:
         logger.debug(f"Running main command: {main_command}")
         self.main_process = subprocess.Popen(main_command, shell=True)
 
+    async def restart_endpoint(self, msg: RestartMessage):
+        '''API endpoint which accepts a POST request with {"sender_pod_name": "podname"} to trigger an in place restart
+        of the user process.'''
+        logger.debug(f"received restart signal from pod: {msg.dict()['sender_pod_name']}")
+
+        # kill existing user process
+        os.kill(self.main_process.pid, signal.SIGUSR1)
+
+        # create new user process and store it for tracking
+        self.start_main_process()
+        logger.debug("Successfully restarted main process")
+
+        return Response(status_code=status.HTTP_200_OK) 
+
+    def get_pod_hostnames(self, namespace: str = "default", batch_size: int = 100):
+        """Generator which yields all pod hostnames in the JobSet, in batches of configurable size."""
+        self_pod_name = os.getenv(POD_NAME_ENV)
+        pods = client.CoreV1Api().list_namespaced_pod(namespace)
+        # filter out self pod name
+        pod_hostnames: list[str] = [pod.spec.hostname for pod in pods.items if pod.metadata.name != self_pod_name]
+
+        # if batch size is larger than total number of pods, adjust it
+        batch_size = min(batch_size, len(pod_hostnames))
+        for i in range(0, len(pod_hostnames), batch_size):
+            yield pod_hostnames[i:i+batch_size]
+
     async def broadcast_restart_signal(self, namespace: str = "default"):
-        """Attemp to acquire a lock and concurrently broadcast restart signals to all worker pods
+        """Attempt to acquire a lock and concurrently broadcast restart signals to all worker pods
         in the JobSet. If this pod cannot acquire the lock, return early and do nothing, since
         this means another pod is already broadcasting the restart signal."""
-        # create coroutines
-        tasks = [
-            asyncio.create_task(self.exec_restart_command(pod_hostname, namespace))
-            for pod_hostname in self.get_pod_hostnames(namespace)
-        ]
+        logger.debug("broadcast_restart_signal")
+        tasks = []
+        for pod_hostname in self.get_pod_hostnames():
+            logger.debug(f"broadcasting to {pod_hostname}")
+            # create coroutine for each pod
+            task = asyncio.create_task(self.exec_restart_command(pod_hostname, namespace))
+            tasks.append(task)
+
         # await concurrent execution of coroutines to complete
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 logger.debug(f"Failed to broadcast signal to pod: {result}")
-        logger.debug("Finished broadcasting restart signal")
 
     async def exec_restart_command(self, pod_hostname: str, namespace: str = "default"):
         """Send POST request to /restart endpoint for hte given pod to trigger a restart."""
+        logger.debug("acquiring semaphore")
         async with self.semaphore:
             logger.debug(f"sending async POST to {pod_hostname}")
-            res = await self.async_client.post(f"http://{pod_hostname}.{self.jobset_name}:8000/restart", json={"sender_pod_name": self.pod_name})
+            try:
+                res = await self.async_client.post(f"http://{pod_hostname}.{self.jobset_name}:8000/restart", json={"sender_pod_name": self.pod_name})
+            except Exception as e:
+                logger.error(f"error broadcasting signal to pod {pod_hostname}: {e}")
+                return
             if res.status_code != 200:
-                logger.error(f"error sending restart request to {pod_hostname}/restarts. status: {res.status_code}, reason: {res.reason}")
+                logger.error(f"error sending restart request to http://{pod_hostname}/restarts. status: {res.status_code}, reason: {res.reason}")
             else:
                 logger.debug(f"successfully sent restart signal to pod: {pod_hostname}")
 
@@ -213,14 +167,14 @@ class RestartHandler:
                 if self.main_process.returncode == -signal.SIGUSR1:
                     logger.debug(f"Process was killed by restart handler with SIGUSR1 - not broadcasting restart signal.")
                     continue
-                    
+
                 # attempt to acquire lease. if we successfully acquire it, broadcast restart signal.
                 # otherwise, do nothing.
                 # if self.acquire_lease():
                 logger.debug("Main command failed. Broadcasting restart signal...")
                 start = time.perf_counter()
 
-                await self.broadcast_restart_signal(self.namespace) # broadcast restart signal
+                await self.broadcast_restart_signal() # broadcast restart signal
                 self.start_main_process()                           # restart local user process
 
                 restart_latency = time.perf_counter() - start

@@ -1,15 +1,15 @@
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
-  name: fastapi1k2
+  name: fastapi5k3
 spec:
   replicatedJobs:
   - name: workers
     replicas: 5
     template:
       spec:
-        parallelism: 200
-        completions: 200
+        parallelism: 1
+        completions: 1
         backoffLimit: 0
         template:
           spec:
@@ -51,12 +51,6 @@ spec:
               volumeMounts:
               - name: shared-data
                 mountPath: /data
-              # command: 
-              #   - bash
-              #   - -xc
-              #   - |
-              #     curl https://raw.githubusercontent.com/danielvegamyhre/jobset/script/hack/restart_handler/exec/restart_handler.py > restart_handler.py
-              #     python3 restart_handler.py
               command: 
                 - bash
                 - -xc
